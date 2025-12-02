@@ -33,7 +33,10 @@ import {
   XCircle,
   Bot,
   Loader2,
-  List
+  List,
+  Settings,
+  Key,
+  Wifi
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = '1509';
@@ -52,8 +55,13 @@ const App: React.FC = () => {
   const [newClassDesc, setNewClassDesc] = useState('');
   const [newStudentUser, setNewStudentUser] = useState('');
   const [newStudentPass, setNewStudentPass] = useState('');
-  const [adminTab, setAdminTab] = useState<'CLASSES' | 'STUDENTS'>('CLASSES');
+  const [adminTab, setAdminTab] = useState<'CLASSES' | 'STUDENTS' | 'SETTINGS'>('CLASSES');
   
+  // Settings State
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [isTestingKey, setIsTestingKey] = useState(false);
+  const [keyStatus, setKeyStatus] = useState<'NONE' | 'VALID' | 'INVALID'>('NONE');
+
   // --- CLASS & CONTENT STATE ---
   const [currentClass, setCurrentClass] = useState<ClassSession | null>(null);
   const [currentWeek, setCurrentWeek] = useState<Week | null>(null);
@@ -175,6 +183,9 @@ const App: React.FC = () => {
       setAdminClasses(classes);
       const students = await API.fetchAllUsers();
       setAllStudents(students);
+      // Fetch API Key for Settings
+      const key = await API.getGeminiApiKey();
+      if (key) setApiKeyInput(key);
     } catch (e) { console.error(e); }
   };
 
@@ -285,6 +296,29 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // --- API KEY HANDLERS ---
+  const handleSaveApiKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      await API.saveGeminiApiKey(apiKeyInput);
+      alert("API Key tersimpan di database!");
+      setKeyStatus('NONE');
+    } catch (e) {
+      alert("Gagal menyimpan API Key");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleTestApiKey = async () => {
+    setIsTestingKey(true);
+    setKeyStatus('NONE');
+    const isValid = await API.testGeminiConnection(apiKeyInput);
+    setKeyStatus(isValid ? 'VALID' : 'INVALID');
+    setIsTestingKey(false);
   };
 
   // --- CONTENT HANDLERS ---
@@ -557,12 +591,19 @@ const App: React.FC = () => {
                >
                  <Users size={20}/> KELOLA SISWA
                </NeoButton>
+               <NeoButton 
+                 variant={adminTab === 'SETTINGS' ? 'secondary' : 'primary'}
+                 onClick={() => setAdminTab('SETTINGS')}
+                 className="flex items-center justify-center gap-2"
+               >
+                 <Settings size={20}/> PENGATURAN
+               </NeoButton>
              </div>
           </NeoCard>
         </div>
 
         <div className="md:col-span-2">
-          {adminTab === 'CLASSES' ? (
+          {adminTab === 'CLASSES' && (
             <div className="flex flex-col gap-8">
               <NeoCard title="Buat Kelas Baru" color="white">
                 <form onSubmit={handleCreateClass} className="flex flex-col gap-4">
@@ -607,7 +648,9 @@ const App: React.FC = () => {
                 ))}
               </div>
             </div>
-          ) : (
+          )}
+
+          {adminTab === 'STUDENTS' && (
             <div className="flex flex-col gap-8">
               <NeoCard title="Tambah Siswa Baru" color="pink">
                 <form onSubmit={handleCreateStudent} className="flex flex-col gap-4">
@@ -654,6 +697,54 @@ const App: React.FC = () => {
                   ))}
                 </div>
               </div>
+            </div>
+          )}
+
+          {adminTab === 'SETTINGS' && (
+            <div className="flex flex-col gap-8">
+              <NeoCard title="Konfigurasi AI Gemini" color="blue">
+                 <div className="bg-white border-2 border-black p-4 mb-4 text-sm">
+                    <p className="font-bold mb-2 flex items-center gap-2"><Key size={16}/> API Key</p>
+                    <p className="mb-2">Masukkan Google Gemini API Key Anda. Key ini akan disimpan di database dan digunakan untuk fitur koreksi otomatis.</p>
+                    <p className="text-gray-500 italic text-xs">Model: gemini-flash-lite (2.5)</p>
+                 </div>
+
+                 <form onSubmit={handleSaveApiKey} className="flex flex-col gap-4">
+                   <NeoInput 
+                     label="GEMINI API KEY" 
+                     placeholder="AIza..." 
+                     value={apiKeyInput}
+                     onChange={e => {
+                       setApiKeyInput(e.target.value);
+                       setKeyStatus('NONE');
+                     }}
+                     type="password"
+                   />
+                   <div className="flex gap-2">
+                      <NeoButton type="submit" disabled={isLoading}>SIMPAN KEY</NeoButton>
+                      <button 
+                        type="button" 
+                        onClick={handleTestApiKey}
+                        disabled={!apiKeyInput || isTestingKey}
+                        className="bg-white border-2 border-black px-4 py-2 font-bold flex items-center gap-2 hover:bg-gray-100 disabled:opacity-50"
+                      >
+                         {isTestingKey ? <Loader2 className="animate-spin" size={16}/> : <Wifi size={16}/>} 
+                         TES KONEKSI
+                      </button>
+                   </div>
+                 </form>
+
+                 {keyStatus === 'VALID' && (
+                   <div className="mt-4 p-3 bg-green-200 border-2 border-black font-bold text-green-800 flex items-center gap-2">
+                     <CheckCircle size={20}/> KONEKSI SUKSES! API Key valid.
+                   </div>
+                 )}
+                 {keyStatus === 'INVALID' && (
+                   <div className="mt-4 p-3 bg-red-200 border-2 border-black font-bold text-red-800 flex items-center gap-2">
+                     <XCircle size={20}/> KONEKSI GAGAL! Periksa kembali Key Anda.
+                   </div>
+                 )}
+              </NeoCard>
             </div>
           )}
         </div>
@@ -1179,9 +1270,16 @@ const App: React.FC = () => {
                        <div key={q.id} className="p-3 bg-gray-50 border border-black text-sm">
                           <p className="font-bold mb-1"><span className="bg-black text-white px-1 mr-2">{idx+1}</span> {q.text}</p>
                           <div className="flex flex-col gap-1 ml-6">
-                             <p>Jawaban Siswa: <span className="font-mono font-bold">{studentAns || '-'}</span></p>
+                             <div className="bg-white p-2 border border-gray-300">
+                                <p className="text-xs font-bold text-gray-500 uppercase">Jawaban Siswa:</p>
+                                <p className="font-mono font-bold text-lg">{studentAns || '-'}</p>
+                             </div>
+                             
                              {q.type === 'multiple_choice' && (
-                               <p className="text-gray-500">Kunci Jawaban: {q.correctAnswer}</p>
+                               <div className="text-sm">
+                                  <span className="text-gray-500 mr-2">Kunci:</span> 
+                                  <span className="font-bold bg-green-100 px-1 border border-green-300">{q.correctAnswer}</span>
+                               </div>
                              )}
                              
                              <div className="mt-1">
@@ -1191,9 +1289,11 @@ const App: React.FC = () => {
                              </div>
 
                              {aiFeedback && (
-                               <div className="mt-2 bg-blue-50 border border-blue-200 p-2 text-blue-900 rounded">
-                                  <p className="font-bold text-xs flex items-center gap-1"><Bot size={12}/> KOREKSI AI:</p>
-                                  <p className="italic">{aiFeedback}</p>
+                               <div className="mt-3 bg-indigo-50 border-2 border-indigo-400 p-3 shadow-[2px_2px_0px_0px_rgba(67,56,202,0.3)]">
+                                  <p className="font-black text-xs flex items-center gap-1 text-indigo-800 mb-1 border-b border-indigo-200 pb-1">
+                                    <Bot size={14}/> KOREKSI & PENJELASAN AI
+                                  </p>
+                                  <p className="text-indigo-900 leading-relaxed font-medium">{aiFeedback}</p>
                                </div>
                              )}
                           </div>

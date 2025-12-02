@@ -1,10 +1,38 @@
 import { ref, set, push, get, child, update, remove, onDisconnect, onValue, serverTimestamp } from "firebase/database";
 import { db } from "../firebaseConfig";
 import { User, ClassSession, UserRole, Week, WeekItem, Question, Comment, QuizResult } from "../types";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
+
+// --- SYSTEM CONFIG (API KEY) ---
+
+export const saveGeminiApiKey = async (apiKey: string) => {
+  await set(ref(db, 'config/geminiApiKey'), apiKey);
+};
+
+export const getGeminiApiKey = async (): Promise<string | null> => {
+  const snapshot = await get(child(ref(db), 'config/geminiApiKey'));
+  if (snapshot.exists()) {
+    return snapshot.val();
+  }
+  return null;
+};
+
+export const testGeminiConnection = async (apiKey: string): Promise<boolean> => {
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    // Simple test prompt
+    await ai.models.generateContent({
+      model: 'gemini-flash-lite-latest',
+      contents: 'Test connection',
+    });
+    return true;
+  } catch (error) {
+    console.error("Gemini Connection Test Failed:", error);
+    return false;
+  }
+};
 
 // --- AI CONFIG ---
-// Fix: Use process.env.API_KEY per guidelines (removed hardcoded key)
 
 export const assessQuizWithAI = async (
   questions: Question[], 
@@ -12,8 +40,16 @@ export const assessQuizWithAI = async (
   detailLevel: 'brief' | 'detailed'
 ): Promise<Record<string, string>> => {
   try {
-    // Fix: Initialize GoogleGenAI with process.env.API_KEY
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    // 1. Fetch API Key from Database
+    const apiKey = await getGeminiApiKey();
+    
+    if (!apiKey) {
+      console.warn("AI Assessment skipped: No API Key found in database.");
+      return {};
+    }
+
+    // 2. Initialize with stored key
+    const ai = new GoogleGenAI({ apiKey });
     
     // Construct the prompt
     let promptText = `Anda adalah guru privat yang teliti. Koreksi jawaban siswa berikut.\n`;
@@ -21,6 +57,7 @@ export const assessQuizWithAI = async (
     promptText += `Gunakan Bahasa Indonesia.\n\n`;
 
     questions.forEach((q, index) => {
+      promptText += `ID Soal: ${q.id}\n`;
       promptText += `Soal ${index + 1} (${q.type}): "${q.text}"\n`;
       if (q.type === 'multiple_choice' && q.options) {
         promptText += `Pilihan: ${q.options.join(', ')}\n`;
@@ -29,23 +66,39 @@ export const assessQuizWithAI = async (
       promptText += `Jawaban Siswa: "${studentAnswers[q.id] || '(Kosong)'}"\n\n`;
     });
 
-    promptText += `Outputkan HANYA JSON valid (tanpa markdown code block) dengan format: { "question_id": "komentar koreksi anda", ... }`;
-
+    // 3. Use Gemini 2.5 Flash Lite with structured output
     const response = await ai.models.generateContent({
       model: 'gemini-flash-lite-latest',
       contents: promptText,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              questionId: { type: Type.STRING },
+              feedback: { type: Type.STRING }
+            },
+            required: ["questionId", "feedback"]
+          }
+        }
+      }
     });
     
-    let jsonStr = response.text || "{}";
-    // Clean markdown if present
-    jsonStr = jsonStr.replace(/```json/g, '').replace(/```/g, '').trim();
+    const jsonStr = response.text || "[]";
+    const parsed = JSON.parse(jsonStr);
     
-    try {
-      return JSON.parse(jsonStr);
-    } catch (e) {
-      console.error("Failed to parse AI JSON", e);
-      return {};
+    const result: Record<string, string> = {};
+    if (Array.isArray(parsed)) {
+      parsed.forEach((item: any) => {
+        if (item.questionId && item.feedback) {
+          result[item.questionId] = item.feedback;
+        }
+      });
     }
+    
+    return result;
 
   } catch (error) {
     console.error("AI Error:", error);

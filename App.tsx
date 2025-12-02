@@ -3,12 +3,12 @@ import {
   User, 
   UserRole, 
   ViewState, 
-  ClassSession,
-  Week,
-  WeekItem,
-  Question,
-  Comment,
-  QuizResult
+  ClassSession, 
+  Week, 
+  WeekItem, 
+  Question, 
+  Comment, 
+  QuizResult 
 } from './types';
 import { NeoButton, NeoInput, NeoCard, NeoTextArea, NeoBadge } from './components/NeoUI';
 import * as API from './services/api';
@@ -20,23 +20,24 @@ import {
   Plus, 
   Users, 
   School, 
-  ArrowRight,
-  Folder,
-  FileText,
-  MessageCircle,
-  Clock,
-  CheckCircle,
-  Trash2,
-  Circle,
-  PlayCircle,
-  BarChart2,
-  XCircle,
-  Bot,
-  Loader2,
-  List,
-  Settings,
-  Key,
-  Wifi
+  ArrowRight, 
+  Folder, 
+  FileText, 
+  MessageCircle, 
+  Clock, 
+  CheckCircle, 
+  Trash2, 
+  Circle, 
+  PlayCircle, 
+  BarChart2, 
+  XCircle, 
+  Bot, 
+  Loader2, 
+  List, 
+  Settings, 
+  Key, 
+  Wifi, 
+  MessageSquare
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = '1509';
@@ -61,6 +62,7 @@ const App: React.FC = () => {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [keyStatus, setKeyStatus] = useState<'NONE' | 'VALID' | 'INVALID'>('NONE');
+  const [testResponse, setTestResponse] = useState('');
 
   // --- CLASS & CONTENT STATE ---
   const [currentClass, setCurrentClass] = useState<ClassSession | null>(null);
@@ -306,6 +308,7 @@ const App: React.FC = () => {
       await API.saveGeminiApiKey(apiKeyInput);
       alert("API Key tersimpan di database!");
       setKeyStatus('NONE');
+      setTestResponse('');
     } catch (e) {
       alert("Gagal menyimpan API Key");
     } finally {
@@ -316,8 +319,13 @@ const App: React.FC = () => {
   const handleTestApiKey = async () => {
     setIsTestingKey(true);
     setKeyStatus('NONE');
-    const isValid = await API.testGeminiConnection(apiKeyInput);
-    setKeyStatus(isValid ? 'VALID' : 'INVALID');
+    setTestResponse('');
+    
+    const result = await API.testGeminiConnection(apiKeyInput);
+    
+    setKeyStatus(result.success ? 'VALID' : 'INVALID');
+    setTestResponse(result.message);
+    
     setIsTestingKey(false);
   };
 
@@ -729,19 +737,33 @@ const App: React.FC = () => {
                         className="bg-white border-2 border-black px-4 py-2 font-bold flex items-center gap-2 hover:bg-gray-100 disabled:opacity-50"
                       >
                          {isTestingKey ? <Loader2 className="animate-spin" size={16}/> : <Wifi size={16}/>} 
-                         TES KONEKSI
+                         TES KONEKSI & CHAT
                       </button>
                    </div>
                  </form>
 
                  {keyStatus === 'VALID' && (
-                   <div className="mt-4 p-3 bg-green-200 border-2 border-black font-bold text-green-800 flex items-center gap-2">
-                     <CheckCircle size={20}/> KONEKSI SUKSES! API Key valid.
+                   <div className="mt-4 p-4 bg-green-100 border-2 border-black text-green-900 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                     <div className="flex items-center gap-2 font-bold mb-3 border-b-2 border-black pb-2">
+                        <CheckCircle size={20} className="text-green-600"/> KONEKSI SUKSES!
+                     </div>
+                     <div className="flex gap-3 items-start">
+                        <div className="bg-white p-2 border-2 border-black rounded-full">
+                           <Bot size={20} className="text-blue-500"/>
+                        </div>
+                        <div className="flex-1">
+                           <p className="text-xs font-bold text-gray-500 uppercase mb-1">Balasan AI:</p>
+                           <p className="text-sm font-medium italic">"{testResponse}"</p>
+                        </div>
+                     </div>
                    </div>
                  )}
                  {keyStatus === 'INVALID' && (
-                   <div className="mt-4 p-3 bg-red-200 border-2 border-black font-bold text-red-800 flex items-center gap-2">
-                     <XCircle size={20}/> KONEKSI GAGAL! Periksa kembali Key Anda.
+                   <div className="mt-4 p-4 bg-red-100 border-2 border-black text-red-900 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                     <div className="flex items-center gap-2 font-bold mb-2">
+                        <XCircle size={20}/> KONEKSI GAGAL!
+                     </div>
+                     <p className="text-xs font-mono bg-white p-2 border border-red-300">{testResponse}</p>
                    </div>
                  )}
               </NeoCard>

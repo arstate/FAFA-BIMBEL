@@ -17,18 +17,18 @@ export const getGeminiApiKey = async (): Promise<string | null> => {
   return null;
 };
 
-export const testGeminiConnection = async (apiKey: string): Promise<boolean> => {
+export const testGeminiConnection = async (apiKey: string): Promise<{ success: boolean; message: string }> => {
   try {
     const ai = new GoogleGenAI({ apiKey });
-    // Simple test prompt
-    await ai.models.generateContent({
-      model: 'gemini-flash-lite-latest',
-      contents: 'Test connection',
+    // Test prompt with conversational response
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: 'Halo! Sapa saya sebagai asisten guru dengan antusias dalam satu kalimat pendek.',
     });
-    return true;
-  } catch (error) {
+    return { success: true, message: response.text || "Tidak ada teks balasan." };
+  } catch (error: any) {
     console.error("Gemini Connection Test Failed:", error);
-    return false;
+    return { success: false, message: error.message || "Terjadi kesalahan koneksi." };
   }
 };
 

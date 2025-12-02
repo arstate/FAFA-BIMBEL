@@ -446,7 +446,7 @@ const App: React.FC = () => {
   const renderClassDetail = () => {
     if (!currentClass) return <div>Loading...</div>;
 
-    const materials: Material[] = currentClass.materials ? Object.values(currentClass.materials) : [];
+    const materials: Material[] = currentClass.materials ? (Object.values(currentClass.materials) as Material[]) : [];
 
     return (
       <div className="p-4 md:p-8 max-w-4xl mx-auto">

@@ -3,6 +3,57 @@
 import { ref, set, push, get, child, update, remove, onDisconnect, onValue, serverTimestamp } from "firebase/database";
 import { db } from "../firebaseConfig";
 import { User, ClassSession, UserRole, Week, WeekItem, Question, Comment, QuizResult } from "../types";
+import { GoogleGenAI } from "@google/genai";
+
+// --- AI CONFIG ---
+const GEMINI_API_KEY = "AIzaSyAM5ilqBXb62X4MN-ZM83NpQtOaK_5-9jQ";
+
+export const assessQuizWithAI = async (
+  questions: Question[], 
+  studentAnswers: Record<string, string>,
+  detailLevel: 'brief' | 'detailed'
+): Promise<Record<string, string>> => {
+  try {
+    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    
+    // Construct the prompt
+    let promptText = `Anda adalah guru privat yang teliti. Koreksi jawaban siswa berikut.\n`;
+    promptText += `Berikan komentar koreksi yang ${detailLevel === 'brief' ? 'SINGKAT, PADAT, JELAS (maks 2 kalimat)' : 'DETAIL, MENJELASKAN KENAPA SALAH/BENAR, DAN KONSEPNYA'}.\n`;
+    promptText += `Gunakan Bahasa Indonesia.\n\n`;
+
+    questions.forEach((q, index) => {
+      promptText += `Soal ${index + 1} (${q.type}): "${q.text}"\n`;
+      if (q.type === 'multiple_choice' && q.options) {
+        promptText += `Pilihan: ${q.options.join(', ')}\n`;
+        promptText += `Kunci Jawaban: ${q.correctAnswer}\n`;
+      }
+      promptText += `Jawaban Siswa: "${studentAnswers[q.id] || '(Kosong)'}"\n\n`;
+    });
+
+    promptText += `Outputkan HANYA JSON valid (tanpa markdown code block) dengan format: { "question_id": "komentar koreksi anda", ... }`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-flash-lite-latest',
+      contents: promptText,
+    });
+    
+    let jsonStr = response.text || "{}";
+    // Clean markdown if present
+    jsonStr = jsonStr.replace(/```json/g, '').replace(/```/g, '').trim();
+    
+    try {
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      console.error("Failed to parse AI JSON", e);
+      return {};
+    }
+
+  } catch (error) {
+    console.error("AI Error:", error);
+    return {};
+  }
+};
+
 
 // --- UTILS ---
 const generateAccessCode = (): string => {

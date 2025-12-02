@@ -31,6 +31,7 @@ export interface QuizResult {
   studentName: string;
   score: number;
   answers: Record<string, string>; // questionId -> studentAnswer
+  aiFeedback?: Record<string, string>; // questionId -> AI feedback text
   timestamp: number;
 }
 
@@ -45,6 +46,10 @@ export interface WeekItem {
   durationMinutes?: number;
   questions?: Record<string, Question>; 
   results?: Record<string, QuizResult>; // studentId -> QuizResult
+  
+  // AI Config
+  aiCorrectionEnabled?: boolean;
+  aiDetailLevel?: 'brief' | 'detailed';
 }
 
 export interface Week {

@@ -30,7 +30,9 @@ import {
   Circle,
   PlayCircle,
   BarChart2,
-  XCircle
+  XCircle,
+  Bot,
+  Loader2
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = '1509';
@@ -63,6 +65,9 @@ const App: React.FC = () => {
   const [newItemPreview, setNewItemPreview] = useState('');
   const [newItemType, setNewItemType] = useState<'material' | 'quiz'>('material');
   const [quizDuration, setQuizDuration] = useState(15);
+  // AI Config State
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [aiDetailLevel, setAiDetailLevel] = useState<'brief' | 'detailed'>('brief');
 
   // --- QUIZ & QUESTIONS STATE ---
   const [editingQuizId, setEditingQuizId] = useState<string | null>(null);
@@ -75,7 +80,7 @@ const App: React.FC = () => {
   // Student taking quiz
   const [quizTimer, setQuizTimer] = useState(0);
   const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>({});
-  const [studentQuizResult, setStudentQuizResult] = useState<QuizResult | null>(null); // Status if student took quiz
+  const [isSubmittingQuiz, setIsSubmittingQuiz] = useState(false);
 
   // Teacher viewing report
   const [reportQuizId, setReportQuizId] = useState<string | null>(null);
@@ -306,6 +311,8 @@ const App: React.FC = () => {
 
     if (newItemType === 'quiz') {
       newItemPayload.durationMinutes = quizDuration;
+      newItemPayload.aiCorrectionEnabled = aiEnabled;
+      newItemPayload.aiDetailLevel = aiDetailLevel;
     }
     
     await API.addItemToWeek(currentClass.id, currentWeek.id, newItemPayload);
@@ -314,6 +321,7 @@ const App: React.FC = () => {
     setNewItemDesc('');
     setNewItemPreview('');
     setNewItemType('material');
+    setAiEnabled(false);
     await loadWeekDetail(currentClass.id, currentWeek.id);
   };
 
@@ -369,48 +377,69 @@ const App: React.FC = () => {
   const handleSubmitQuiz = async () => {
     if (!currentClass || !currentWeek || !viewState.selectedQuizId || !currentUser) return;
     
-    const quizItem = currentWeek.items?.[viewState.selectedQuizId];
-    if (!quizItem || !quizItem.questions) return;
-    
-    const questions = Object.values(quizItem.questions) as Question[];
-    let correctCount = 0;
+    setIsSubmittingQuiz(true);
 
-    // Auto grading logic
-    questions.forEach(q => {
-      const studentAns = quizAnswers[q.id];
-      if (q.type === 'multiple_choice' && studentAns === q.correctAnswer) {
-        correctCount++;
-      }
-      // Essay tidak dihitung otomatis untuk skor 100 base, 
-      // tapi disimpan. Guru bisa koreksi manual nanti.
-      // Di sini kita asumsikan skor hanya berbasis soal pilihan ganda
-      // atau skor 0 untuk essay sementara.
-    });
+    try {
+        const quizItem = currentWeek.items?.[viewState.selectedQuizId];
+        if (!quizItem || !quizItem.questions) return;
+        
+        const questions = Object.values(quizItem.questions) as Question[];
+        let correctCount = 0;
 
-    const totalQuestions = questions.length;
-    // Calculate score (0-100)
-    const finalScore = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+        // Auto grading logic (for MC)
+        questions.forEach(q => {
+          const studentAns = quizAnswers[q.id];
+          if (q.type === 'multiple_choice' && studentAns === q.correctAnswer) {
+            correctCount++;
+          }
+        });
 
-    const resultPayload: QuizResult = {
-      studentId: currentUser.id,
-      studentName: currentUser.username,
-      score: finalScore,
-      answers: quizAnswers,
-      timestamp: Date.now()
-    };
+        const totalQuestions = questions.length;
+        // Calculate raw score (0-100) based on correct answers (MC only initially)
+        const finalScore = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
 
-    await API.submitQuizResult(currentClass.id, currentWeek.id, viewState.selectedQuizId, resultPayload);
-    
-    alert(`Latihan Selesai! Nilai Anda: ${finalScore}`);
-    
-    if (currentUser?.role === UserRole.STUDENT) {
-      // Reload week to show result
-      await loadWeekDetail(currentClass.id, currentWeek.id);
-      setViewState({ 
-        currentView: 'WEEK_DETAIL', 
-        selectedClassId: viewState.selectedClassId, 
-        selectedWeekId: viewState.selectedWeekId 
-      });
+        // Prepare Payload - SANITIZE UNDEFINED
+        const answersPayload: Record<string, string> = {};
+        Object.keys(quizAnswers).forEach(key => {
+            if (quizAnswers[key]) answersPayload[key] = quizAnswers[key];
+        });
+
+        const resultPayload: QuizResult = {
+          studentId: currentUser.id,
+          studentName: currentUser.username,
+          score: finalScore,
+          answers: answersPayload, // Use sanitized payload
+          timestamp: Date.now()
+        };
+
+        // --- AI CORRECTION LOGIC ---
+        if (quizItem.aiCorrectionEnabled) {
+          const feedback = await API.assessQuizWithAI(
+            questions, 
+            answersPayload, 
+            quizItem.aiDetailLevel || 'brief'
+          );
+          resultPayload.aiFeedback = feedback;
+        }
+
+        await API.submitQuizResult(currentClass.id, currentWeek.id, viewState.selectedQuizId, resultPayload);
+        
+        alert(`Latihan Selesai! Nilai Anda: ${finalScore} ${quizItem.aiCorrectionEnabled ? '(AI telah mengoreksi jawaban Anda)' : ''}`);
+        
+        if (currentUser?.role === UserRole.STUDENT) {
+          // Reload week to show result
+          await loadWeekDetail(currentClass.id, currentWeek.id);
+          setViewState({ 
+            currentView: 'WEEK_DETAIL', 
+            selectedClassId: viewState.selectedClassId, 
+            selectedWeekId: viewState.selectedWeekId 
+          });
+        }
+    } catch (e: any) {
+        console.error("Submit Error:", e);
+        alert("Gagal mengirim jawaban. Pastikan koneksi lancar.");
+    } finally {
+        setIsSubmittingQuiz(false);
     }
   };
 
@@ -759,7 +788,8 @@ const App: React.FC = () => {
         {currentUser?.role === UserRole.ADMIN && (
           <div id="addWeekForm" className="mt-12 border-t-4 border-dashed border-black pt-8">
             <h3 className="text-xl font-black mb-4">TAMBAH MINGGU BARU</h3>
-            <form onSubmit={handleAddWeek} className="flex gap-4 items-end bg-gray-100 p-4 border-2 border-black">
+            {/* FIX: Responsive Add Week Form */}
+            <form onSubmit={handleAddWeek} className="flex flex-col md:flex-row gap-4 items-stretch md:items-end bg-gray-100 p-4 border-2 border-black">
               <NeoInput placeholder="Judul (Misal: Minggu 1)" value={newWeekTitle} onChange={e => setNewWeekTitle(e.target.value)} />
               <NeoInput placeholder="Deskripsi Singkat" value={newWeekDesc} onChange={e => setNewWeekDesc(e.target.value)} />
               <NeoButton type="submit" variant="accent"><Plus size={18}/></NeoButton>
@@ -789,7 +819,8 @@ const App: React.FC = () => {
            <p className="text-xl">{currentWeek.description}</p>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* FIX: Mobile Layout - Reverse Flex Column ensures Admin panel is on top on mobile, but uses Grid on Desktop */}
+        <div className="flex flex-col-reverse lg:grid lg:grid-cols-3 gap-8">
           {/* Main Content List */}
           <div className="lg:col-span-2 space-y-8">
             {items.length === 0 ? <p className="italic">Belum ada materi atau tugas.</p> : items.map((item) => {
@@ -831,6 +862,11 @@ const App: React.FC = () => {
                                 <div className="bg-green-100 border-2 border-green-600 p-3 inline-block">
                                   <p className="font-bold text-green-800 mb-1">SUDAH DIKERJAKAN</p>
                                   <p className="text-2xl font-black">{myResult.score}/100</p>
+                                  {myResult.aiFeedback && (
+                                    <p className="text-xs text-blue-700 font-bold mt-1 flex items-center justify-center gap-1">
+                                      <Bot size={14}/> Koreksi AI Tersedia
+                                    </p>
+                                  )}
                                 </div>
                               ) : (
                                 <NeoButton variant="primary" onClick={() => handleStartQuiz(item.id, item.durationMinutes || 10)}>
@@ -849,6 +885,11 @@ const App: React.FC = () => {
                                     setEditingQuizId(item.id);
                                     alert("Mode edit soal aktif di panel kanan!");
                                  }}>Tambah Soal</button>
+                                 {item.aiCorrectionEnabled && (
+                                   <div className="mt-1 flex items-center justify-center gap-1 text-blue-700 font-bold text-xs">
+                                     <Bot size={14}/> Koreksi AI Aktif ({item.aiDetailLevel})
+                                   </div>
+                                 )}
                               </div>
                               <NeoButton variant="secondary" size="sm" onClick={() => handleViewReport(item.id)}>
                                  <BarChart2 size={16} className="mr-2 inline"/> LIHAT HASIL & NILAI
@@ -866,6 +907,7 @@ const App: React.FC = () => {
                       weekId={currentWeek.id} 
                       itemId={item.id} 
                       user={currentUser!}
+                      allStudents={allStudents}
                     />
                   </div>
                 </div>
@@ -873,7 +915,7 @@ const App: React.FC = () => {
             })}
           </div>
 
-          {/* Sidebar Admin Tools */}
+          {/* Sidebar Admin Tools - This comes FIRST on mobile due to flex-col-reverse */}
           {currentUser?.role === UserRole.ADMIN && (
             <div className="lg:col-span-1 space-y-6">
               <NeoCard title="Tambah Item" color="green" className="">
@@ -889,7 +931,37 @@ const App: React.FC = () => {
                   <NeoTextArea placeholder={newItemType === 'quiz' ? "Deskripsi instruksi kuis..." : "Isi materi lengkap..."} rows={4} value={newItemDesc} onChange={e => setNewItemDesc(e.target.value)} />
                   
                   {newItemType === 'quiz' && (
-                    <NeoInput type="number" label="Durasi (Menit)" value={quizDuration} onChange={e => setQuizDuration(Number(e.target.value))} />
+                    <div className="bg-white/50 p-2 border border-black space-y-2">
+                      <NeoInput type="number" label="Durasi (Menit)" value={quizDuration} onChange={e => setQuizDuration(Number(e.target.value))} />
+                      
+                      {/* AI SETTINGS */}
+                      <div className="flex items-center gap-2 mt-2">
+                        <input 
+                          type="checkbox" 
+                          id="aiCheck" 
+                          className="w-5 h-5 accent-black" 
+                          checked={aiEnabled} 
+                          onChange={e => setAiEnabled(e.target.checked)}
+                        />
+                        <label htmlFor="aiCheck" className="font-bold flex items-center gap-2 cursor-pointer">
+                          <Bot size={16}/> Koreksi AI Otomatis
+                        </label>
+                      </div>
+
+                      {aiEnabled && (
+                        <div>
+                          <label className="text-xs font-bold block mb-1">DETAIL KOREKSI</label>
+                          <select 
+                            className="w-full border-2 border-black p-1 text-sm font-bold"
+                            value={aiDetailLevel}
+                            onChange={(e: any) => setAiDetailLevel(e.target.value)}
+                          >
+                            <option value="brief">Singkat & Jelas</option>
+                            <option value="detailed">Detail & Penjelasan Konsep</option>
+                          </select>
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   <NeoButton type="submit" size="sm"><Plus size={16}/> TAMBAH</NeoButton>
@@ -993,8 +1065,12 @@ const App: React.FC = () => {
             </div>
 
             <div className="mt-8 flex justify-end">
-              <NeoButton size="lg" variant="primary" onClick={handleSubmitQuiz}>
-                 KIRIM JAWABAN <CheckCircle className="inline ml-2"/>
+              <NeoButton size="lg" variant="primary" onClick={handleSubmitQuiz} disabled={isSubmittingQuiz}>
+                 {isSubmittingQuiz ? (
+                   <span className="flex items-center"><Loader2 className="animate-spin mr-2"/> MENGIRIM...</span>
+                 ) : (
+                   <span className="flex items-center">KIRIM JAWABAN <CheckCircle className="ml-2"/></span>
+                 )}
               </NeoButton>
             </div>
          </div>
@@ -1055,7 +1131,8 @@ const App: React.FC = () => {
                    {questions.map((q, idx) => {
                      const studentAns = res.answers[q.id];
                      const isCorrect = q.type === 'multiple_choice' ? studentAns === q.correctAnswer : 'manual';
-                     
+                     const aiFeedback = res.aiFeedback ? res.aiFeedback[q.id] : null;
+
                      return (
                        <div key={q.id} className="p-3 bg-gray-50 border border-black text-sm">
                           <p className="font-bold mb-1"><span className="bg-black text-white px-1 mr-2">{idx+1}</span> {q.text}</p>
@@ -1064,11 +1141,19 @@ const App: React.FC = () => {
                              {q.type === 'multiple_choice' && (
                                <p className="text-gray-500">Kunci Jawaban: {q.correctAnswer}</p>
                              )}
+                             
                              <div className="mt-1">
                                {isCorrect === true && <span className="text-green-600 font-bold flex items-center gap-1"><CheckCircle size={14}/> BENAR</span>}
                                {isCorrect === false && <span className="text-red-600 font-bold flex items-center gap-1"><XCircle size={14}/> SALAH</span>}
                                {isCorrect === 'manual' && <span className="text-blue-600 font-bold flex items-center gap-1"><Circle size={14}/> ESSAY (Cek Manual)</span>}
                              </div>
+
+                             {aiFeedback && (
+                               <div className="mt-2 bg-blue-50 border border-blue-200 p-2 text-blue-900 rounded">
+                                  <p className="font-bold text-xs flex items-center gap-1"><Bot size={12}/> KOREKSI AI:</p>
+                                  <p className="italic">{aiFeedback}</p>
+                               </div>
+                             )}
                           </div>
                        </div>
                      );
@@ -1098,8 +1183,8 @@ const App: React.FC = () => {
 // --- SUB-COMPONENTS ---
 
 const CommentSection: React.FC<{
-  classId: string, weekId: string, itemId: string, user: User
-}> = ({ classId, weekId, itemId, user }) => {
+  classId: string, weekId: string, itemId: string, user: User, allStudents?: User[]
+}> = ({ classId, weekId, itemId, user, allStudents = [] }) => {
   const [comments, setComments] = useState<Comment[]>([]);
   const [input, setInput] = useState('');
   const [studentThreads, setStudentThreads] = useState<string[]>([]); // IDs of students who chatted
@@ -1147,6 +1232,11 @@ const CommentSection: React.FC<{
     setInput('');
   };
 
+  const getStudentName = (id: string) => {
+    const s = allStudents.find(u => u.id === id);
+    return s ? s.username : `Siswa ${id.slice(-4)}`;
+  }
+
   return (
     <div>
        <h4 className="font-bold flex items-center gap-2 mb-2">
@@ -1160,9 +1250,9 @@ const CommentSection: React.FC<{
                <button 
                  key={sid}
                  onClick={() => setSelectedStudentId(sid)}
-                 className={`px-3 py-1 text-xs font-bold border-2 border-black ${selectedStudentId === sid ? 'bg-yellow-300' : 'bg-white'}`}
+                 className={`px-3 py-1 text-xs font-bold border-2 border-black whitespace-nowrap ${selectedStudentId === sid ? 'bg-yellow-300' : 'bg-white'}`}
                >
-                 Siswa ID: {sid.slice(-4)}
+                 {getStudentName(sid)}
                </button>
             ))}
          </div>

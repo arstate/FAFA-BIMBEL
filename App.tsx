@@ -1,24 +1,34 @@
-import React, { useState, useEffect } from 'react';
+
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   User, 
   UserRole, 
   ViewState, 
   ClassSession,
-  Material
+  Week,
+  WeekItem,
+  Question,
+  Comment
 } from './types';
 import { NeoButton, NeoInput, NeoCard, NeoTextArea, NeoBadge } from './components/NeoUI';
 import * as API from './services/api';
+import { db } from './firebaseConfig'; // Direct import for realtime listener in component if needed
+import { ref, onValue } from 'firebase/database';
 import { 
   BookOpen, 
   LogOut, 
   Plus, 
   Users, 
-  Key, 
   School, 
   ArrowRight,
+  Folder,
   FileText,
+  MessageCircle,
+  Clock,
   CheckCircle,
-  Hash
+  Trash2,
+  Circle,
+  PlayCircle
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = '1509';
@@ -32,17 +42,43 @@ const App: React.FC = () => {
 
   // --- ADMIN STATE ---
   const [adminClasses, setAdminClasses] = useState<ClassSession[]>([]);
+  const [allStudents, setAllStudents] = useState<User[]>([]);
   const [newClassName, setNewClassName] = useState('');
   const [newClassDesc, setNewClassDesc] = useState('');
   const [newStudentUser, setNewStudentUser] = useState('');
   const [newStudentPass, setNewStudentPass] = useState('');
   const [adminTab, setAdminTab] = useState<'CLASSES' | 'STUDENTS'>('CLASSES');
   
-  // --- CLASS DETAIL STATE ---
+  // --- CLASS & CONTENT STATE ---
   const [currentClass, setCurrentClass] = useState<ClassSession | null>(null);
-  const [newMatTitle, setNewMatTitle] = useState('');
-  const [newMatContent, setNewMatContent] = useState('');
-  const [newMatType, setNewMatType] = useState<'note' | 'exercise'>('note');
+  const [currentWeek, setCurrentWeek] = useState<Week | null>(null);
+  
+  // Forms for Content
+  const [newWeekTitle, setNewWeekTitle] = useState('');
+  const [newWeekDesc, setNewWeekDesc] = useState('');
+  const [newItemTitle, setNewItemTitle] = useState('');
+  const [newItemDesc, setNewItemDesc] = useState(''); // Content/Quiz Desc
+  const [newItemPreview, setNewItemPreview] = useState('');
+  const [newItemType, setNewItemType] = useState<'material' | 'quiz'>('material');
+  const [quizDuration, setQuizDuration] = useState(15);
+
+  // --- QUIZ & QUESTIONS STATE ---
+  const [editingQuizId, setEditingQuizId] = useState<string | null>(null);
+  const [newQText, setNewQText] = useState('');
+  const [newQType, setNewQType] = useState<'multiple_choice' | 'essay'>('multiple_choice');
+  const [newQOptions, setNewQOptions] = useState<string[]>(['', '', '', '']);
+  const [newQCorrect, setNewQCorrect] = useState('');
+  const [newQScore, setNewQScore] = useState(10);
+  
+  // Student taking quiz
+  const [quizTimer, setQuizTimer] = useState(0);
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>({});
+
+  // --- COMMENTS STATE ---
+  const [activeComments, setActiveComments] = useState<Comment[]>([]);
+  const [newComment, setNewComment] = useState('');
+  const [selectedStudentThread, setSelectedStudentThread] = useState<string | null>(null); // For admin to pick which student chat to see
+  const [studentThreads, setStudentThreads] = useState<Record<string, any>>({}); // For admin to list students who commented
 
   // --- STUDENT STATE ---
   const [joinCode, setJoinCode] = useState('');
@@ -55,29 +91,60 @@ const App: React.FC = () => {
 
   // --- EFFECTS ---
   
-  // Check for admin hash
+  // Presence & Hash
   useEffect(() => {
     const handleHashChange = () => {
-      if (window.location.hash === '#/admin') {
-        setLoginMode('ADMIN');
-      }
+      if (window.location.hash === '#/admin') setLoginMode('ADMIN');
     };
-    handleHashChange(); // initial check
+    handleHashChange();
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  // Fetch data when views change
+  // Update Online Status
+  useEffect(() => {
+    if (currentUser?.id) {
+      API.initPresence(currentUser.id);
+    }
+  }, [currentUser]);
+
+  // Data Loading based on View
   useEffect(() => {
     if (viewState.currentView === 'ADMIN_DASHBOARD') {
       loadAdminData();
+      // Realtime listener for students status
+      const usersRef = ref(db, 'users');
+      const unsub = onValue(usersRef, (snapshot) => {
+        if (snapshot.exists()) setAllStudents(Object.values(snapshot.val()));
+      });
+      return () => unsub();
     } else if (viewState.currentView === 'STUDENT_DASHBOARD' && currentUser) {
       loadStudentData();
     } else if (viewState.currentView === 'CLASS_DETAIL' && viewState.selectedClassId) {
       loadClassDetail(viewState.selectedClassId);
+    } else if (viewState.currentView === 'WEEK_DETAIL' && viewState.selectedClassId && viewState.selectedWeekId) {
+      loadWeekDetail(viewState.selectedClassId, viewState.selectedWeekId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewState.currentView, viewState.selectedClassId, currentUser]);
+  }, [viewState.currentView, viewState.selectedClassId, viewState.selectedWeekId, currentUser]);
+
+  // Timer for Quiz
+  useEffect(() => {
+    let interval: any;
+    if (viewState.currentView === 'TAKE_QUIZ' && quizTimer > 0) {
+      interval = setInterval(() => {
+        setQuizTimer((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            handleSubmitQuiz(); // Auto submit
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [viewState.currentView, quizTimer]);
 
   // --- ACTIONS ---
 
@@ -93,9 +160,9 @@ const App: React.FC = () => {
     try {
       const classes = await API.fetchAllClasses();
       setAdminClasses(classes);
-    } catch (e) {
-      console.error(e);
-    }
+      const students = await API.fetchAllUsers();
+      setAllStudents(students);
+    } catch (e) { console.error(e); }
   };
 
   const loadStudentData = async () => {
@@ -103,9 +170,7 @@ const App: React.FC = () => {
     try {
       const classes = await API.fetchMyClasses(currentUser.id);
       setMyClasses(classes);
-    } catch (e) {
-      console.error(e);
-    }
+    } catch (e) { console.error(e); }
   };
 
   const loadClassDetail = async (id: string) => {
@@ -113,10 +178,16 @@ const App: React.FC = () => {
     try {
       const cls = await API.fetchClassDetails(id);
       setCurrentClass(cls);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsLoading(false);
+    } catch (e) { console.error(e); } 
+    finally { setIsLoading(false); }
+  };
+
+  const loadWeekDetail = async (classId: string, weekId: string) => {
+    // Re-fetch class to get latest week data
+    const cls = await API.fetchClassDetails(classId);
+    if (cls && cls.weeks && cls.weeks[weekId]) {
+      setCurrentClass(cls);
+      setCurrentWeek(cls.weeks[weekId]);
     }
   };
 
@@ -128,11 +199,11 @@ const App: React.FC = () => {
     try {
       if (loginMode === 'ADMIN') {
         if (loginPass === ADMIN_PASSWORD) {
-          const adminUser: User = { id: 'admin', username: 'Admin', role: UserRole.ADMIN };
+          const adminUser: User = { id: 'admin', username: 'Guru/Admin', role: UserRole.ADMIN };
           setCurrentUser(adminUser);
           setViewState({ currentView: 'ADMIN_DASHBOARD' });
         } else {
-          setError('Wrong admin password!');
+          setError('Password Admin Salah!');
         }
       } else {
         const user = await API.loginStudent(loginUser, loginPass);
@@ -140,11 +211,11 @@ const App: React.FC = () => {
           setCurrentUser(user);
           setViewState({ currentView: 'STUDENT_DASHBOARD' });
         } else {
-          setError('Invalid username or password.');
+          setError('Username atau Password salah.');
         }
       }
     } catch (err) {
-      setError('Login failed. Please try again.');
+      setError('Gagal Login. Coba lagi.');
     } finally {
       setIsLoading(false);
     }
@@ -159,12 +230,9 @@ const App: React.FC = () => {
       setNewClassName('');
       setNewClassDesc('');
       await loadAdminData();
-      alert("Class Created Successfully!");
-    } catch (err) {
-      alert("Failed to create class");
-    } finally {
-      setIsLoading(false);
-    }
+      alert("Kelas Berhasil Dibuat!");
+    } catch (err) { alert("Gagal membuat kelas"); } 
+    finally { setIsLoading(false); }
   };
 
   const handleCreateStudent = async (e: React.FormEvent) => {
@@ -175,11 +243,18 @@ const App: React.FC = () => {
       await API.createStudent(newStudentUser, newStudentPass);
       setNewStudentUser('');
       setNewStudentPass('');
-      alert("Student Account Created!");
+      alert("Akun Siswa Berhasil Dibuat!");
     } catch (err: any) {
-      alert(err.message || "Failed to create student");
+      alert(err.message || "Gagal membuat siswa");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleDeleteStudent = async (studentId: string) => {
+    if (confirm("Apakah Anda yakin ingin menghapus akun siswa ini selamanya?")) {
+      await API.deleteUser(studentId);
+      loadAdminData();
     }
   };
 
@@ -189,41 +264,117 @@ const App: React.FC = () => {
     setIsLoading(true);
     try {
       const className = await API.joinClass(currentUser.id, joinCode);
-      alert(`Successfully joined ${className}!`);
+      alert(`Berhasil bergabung ke kelas ${className}!`);
       setJoinCode('');
       await loadStudentData();
     } catch (err: any) {
-      setError(err.message || "Failed to join class");
+      setError(err.message || "Gagal gabung kelas");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleAddMaterial = async (e: React.FormEvent) => {
+  // --- CONTENT HANDLERS ---
+
+  const handleAddWeek = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentClass || !newMatTitle) return;
-    setIsLoading(true);
-    try {
-      await API.addMaterialToClass(currentClass.id, newMatTitle, newMatContent, newMatType);
-      setNewMatTitle('');
-      setNewMatContent('');
-      await loadClassDetail(currentClass.id);
-    } catch (err) {
-      alert("Failed to add material");
-    } finally {
-      setIsLoading(false);
+    if (!currentClass || !newWeekTitle) return;
+    await API.addWeekToClass(currentClass.id, newWeekTitle, newWeekDesc);
+    setNewWeekTitle('');
+    setNewWeekDesc('');
+    await loadClassDetail(currentClass.id);
+  };
+
+  const handleAddItemToWeek = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentClass || !currentWeek || !newItemTitle) return;
+    
+    await API.addItemToWeek(currentClass.id, currentWeek.id, {
+      title: newItemTitle,
+      content: newItemDesc,
+      previewText: newItemPreview,
+      type: newItemType,
+      durationMinutes: newItemType === 'quiz' ? quizDuration : undefined
+    });
+
+    setNewItemTitle('');
+    setNewItemDesc('');
+    setNewItemPreview('');
+    setNewItemType('material');
+    await loadWeekDetail(currentClass.id, currentWeek.id);
+  };
+
+  const handleAddQuestion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentClass || !currentWeek || !editingQuizId || !newQText) return;
+
+    await API.addQuestionToQuiz(currentClass.id, currentWeek.id, editingQuizId, {
+      text: newQText,
+      type: newQType,
+      score: newQScore,
+      options: newQType === 'multiple_choice' ? newQOptions : undefined,
+      correctAnswer: newQCorrect
+    });
+
+    // Reset form
+    setNewQText('');
+    setNewQCorrect('');
+    setNewQOptions(['', '', '', '']);
+    alert("Soal ditambahkan!");
+    await loadWeekDetail(currentClass.id, currentWeek.id);
+  };
+
+  const handleSendComment = async (itemId: string, studentId: string) => {
+    if (!newComment || !currentClass || !currentWeek || !currentUser) return;
+    
+    await API.sendComment(currentClass.id, currentWeek.id, itemId, studentId, {
+      senderId: currentUser.id,
+      senderName: currentUser.username,
+      role: currentUser.role,
+      text: newComment,
+      timestamp: Date.now()
+    });
+    setNewComment('');
+  };
+
+  const handleStartQuiz = (quizId: string, duration: number) => {
+    setViewState({ 
+      ...viewState, 
+      currentView: 'TAKE_QUIZ', 
+      selectedQuizId: quizId 
+    });
+    setQuizTimer(duration * 60); // minutes to seconds
+    setQuizAnswers({});
+  };
+
+  const handleSubmitQuiz = () => {
+    alert("Latihan Soal Selesai! Jawaban tersimpan (Demo Mode).");
+    if (currentUser?.role === UserRole.STUDENT) {
+      setViewState({ currentView: 'WEEK_DETAIL', selectedClassId: viewState.selectedClassId, selectedWeekId: viewState.selectedWeekId });
     }
   };
 
-  // --- RENDERERS ---
+  // --- HELPER RENDER ---
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  const formatLastActive = (timestamp?: number) => {
+    if (!timestamp) return 'Belum pernah aktif';
+    const date = new Date(timestamp);
+    return date.toLocaleString('id-ID');
+  };
+
+  // --- VIEWS ---
 
   const renderLogin = () => (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-yellow-100">
+    <div className="min-h-screen flex items-center justify-center p-4 bg-yellow-100 font-sans">
       <div className="w-full max-w-md relative">
-        {/* Decorative background shape */}
         <div className="absolute top-0 left-0 w-full h-full bg-black translate-x-2 translate-y-2 z-0"></div>
-        
-        <NeoCard className="relative z-10" color="white" title={loginMode === 'ADMIN' ? 'Admin Access' : 'Student Login'}>
+        <NeoCard className="relative z-10" color="white" title={loginMode === 'ADMIN' ? 'AKSES GURU' : 'LOGIN SISWA'}>
           {error && (
             <div className="bg-red-400 text-white p-3 border-2 border-black font-bold mb-4 flex items-center gap-2">
               <span className="text-xl">!</span> {error}
@@ -234,7 +385,7 @@ const App: React.FC = () => {
             {loginMode === 'STUDENT' && (
               <NeoInput 
                 label="Username" 
-                placeholder="Enter your username" 
+                placeholder="Masukkan username" 
                 value={loginUser}
                 onChange={(e) => setLoginUser(e.target.value)}
               />
@@ -243,18 +394,18 @@ const App: React.FC = () => {
             <NeoInput 
               label="Password" 
               type="password" 
-              placeholder={loginMode === 'ADMIN' ? 'Enter Admin PIN' : 'Enter Password'} 
+              placeholder={loginMode === 'ADMIN' ? 'PIN GURU' : 'Password'} 
               value={loginPass}
               onChange={(e) => setLoginPass(e.target.value)}
             />
 
             <NeoButton type="submit" variant="accent" size="lg" disabled={isLoading}>
-              {isLoading ? 'LOADING...' : 'LET ME IN!'}
+              {isLoading ? 'MEMUAT...' : 'MASUK'}
             </NeoButton>
           </form>
 
           <div className="mt-6 pt-6 border-t-2 border-dashed border-black text-center">
-            <p className="text-sm font-bold text-gray-500 mb-2">WRONG PORTAL?</p>
+            <p className="text-sm font-bold text-gray-500 mb-2">SALAH PINTU?</p>
             <button 
               onClick={() => {
                 setLoginMode(prev => prev === 'ADMIN' ? 'STUDENT' : 'ADMIN');
@@ -263,7 +414,7 @@ const App: React.FC = () => {
               }}
               className="text-xs font-black underline hover:text-blue-600 uppercase tracking-widest"
             >
-              Switch to {loginMode === 'ADMIN' ? 'Student' : 'Admin'} Mode
+              Ganti ke Mode {loginMode === 'ADMIN' ? 'Siswa' : 'Guru'}
             </button>
           </div>
         </NeoCard>
@@ -275,15 +426,14 @@ const App: React.FC = () => {
     <div className="p-4 md:p-8 max-w-6xl mx-auto">
       <header className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
         <h1 className="text-4xl md:text-5xl font-black italic tracking-tighter">
-          TEACHER<span className="text-blue-500">ZONE</span>
+          RUANG<span className="text-blue-500">GURU</span>
         </h1>
         <NeoButton variant="danger" size="sm" onClick={handleLogout} className="flex items-center gap-2">
-          <LogOut size={16} /> LOGOUT
+          <LogOut size={16} /> KELUAR
         </NeoButton>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-        {/* Sidebar / Controls */}
         <div className="md:col-span-1 flex flex-col gap-4">
           <NeoCard color="yellow" className="sticky top-4">
              <div className="flex flex-col gap-2">
@@ -292,45 +442,44 @@ const App: React.FC = () => {
                  onClick={() => setAdminTab('CLASSES')}
                  className="flex items-center justify-center gap-2"
                >
-                 <BookOpen size={20}/> Manage Classes
+                 <BookOpen size={20}/> KELOLA KELAS
                </NeoButton>
                <NeoButton 
                  variant={adminTab === 'STUDENTS' ? 'secondary' : 'primary'}
                  onClick={() => setAdminTab('STUDENTS')}
                  className="flex items-center justify-center gap-2"
                >
-                 <Users size={20}/> Manage Students
+                 <Users size={20}/> KELOLA SISWA
                </NeoButton>
              </div>
           </NeoCard>
         </div>
 
-        {/* Main Content Area */}
         <div className="md:col-span-2">
           {adminTab === 'CLASSES' ? (
             <div className="flex flex-col gap-8">
-              <NeoCard title="Create New Class" color="white">
+              <NeoCard title="Buat Kelas Baru" color="white">
                 <form onSubmit={handleCreateClass} className="flex flex-col gap-4">
                   <NeoInput 
-                    label="Class Name" 
-                    placeholder="e.g. Math for Grade 5" 
+                    label="Nama Kelas" 
+                    placeholder="Contoh: Matematika 12 IPA" 
                     value={newClassName}
                     onChange={e => setNewClassName(e.target.value)}
                   />
                   <NeoInput 
-                    label="Description" 
-                    placeholder="Short description..." 
+                    label="Deskripsi" 
+                    placeholder="Deskripsi singkat..." 
                     value={newClassDesc}
                     onChange={e => setNewClassDesc(e.target.value)}
                   />
                   <NeoButton type="submit" className="self-start" disabled={isLoading}>
-                    <Plus size={18} className="inline mr-2"/> CREATE CLASS
+                    <Plus size={18} className="inline mr-2"/> BUAT KELAS
                   </NeoButton>
                 </form>
               </NeoCard>
 
               <div className="grid gap-4">
-                <h3 className="text-2xl font-bold bg-black text-white p-2 inline-block -rotate-1 w-max">EXISTING CLASSES</h3>
+                <h3 className="text-2xl font-bold bg-black text-white p-2 inline-block -rotate-1 w-max">DAFTAR KELAS</h3>
                 {adminClasses.map(cls => (
                   <div key={cls.id} className="relative group">
                     <div className="absolute top-0 left-0 w-full h-full bg-black translate-x-1 translate-y-1 z-0 transition-transform group-hover:translate-x-2 group-hover:translate-y-2"></div>
@@ -338,14 +487,14 @@ const App: React.FC = () => {
                       <div>
                         <h4 className="text-xl font-bold">{cls.name}</h4>
                         <div className="flex items-center gap-2 mt-1">
-                          <NeoBadge color="bg-green-300">CODE: {cls.accessCode}</NeoBadge>
+                          <NeoBadge color="bg-green-300">KODE: {cls.accessCode}</NeoBadge>
                         </div>
                       </div>
                       <NeoButton size="sm" onClick={() => {
                         setCurrentClass(cls);
                         setViewState({ currentView: 'CLASS_DETAIL', selectedClassId: cls.id });
                       }}>
-                        MANAGE
+                        ATUR
                       </NeoButton>
                     </div>
                   </div>
@@ -353,23 +502,53 @@ const App: React.FC = () => {
               </div>
             </div>
           ) : (
-            <NeoCard title="Register Student" color="pink">
-              <form onSubmit={handleCreateStudent} className="flex flex-col gap-4">
-                <NeoInput 
-                  label="New Username" 
-                  value={newStudentUser} 
-                  onChange={e => setNewStudentUser(e.target.value)}
-                />
-                <NeoInput 
-                  label="New Password" 
-                  value={newStudentPass} 
-                  onChange={e => setNewStudentPass(e.target.value)}
-                />
-                <NeoButton type="submit" variant="accent" disabled={isLoading}>
-                  CREATE ACCOUNT
-                </NeoButton>
-              </form>
-            </NeoCard>
+            <div className="flex flex-col gap-8">
+              <NeoCard title="Tambah Siswa Baru" color="pink">
+                <form onSubmit={handleCreateStudent} className="flex flex-col gap-4">
+                  <NeoInput 
+                    label="Username Baru" 
+                    value={newStudentUser} 
+                    onChange={e => setNewStudentUser(e.target.value)}
+                  />
+                  <NeoInput 
+                    label="Password" 
+                    value={newStudentPass} 
+                    onChange={e => setNewStudentPass(e.target.value)}
+                  />
+                  <NeoButton type="submit" variant="accent" disabled={isLoading}>
+                    BUAT AKUN
+                  </NeoButton>
+                </form>
+              </NeoCard>
+
+              <div>
+                <h3 className="text-2xl font-bold mb-4">DATA SISWA</h3>
+                <div className="grid gap-3">
+                  {allStudents.filter(u => u.role === UserRole.STUDENT).map(student => (
+                    <div key={student.id} className="bg-white border-2 border-black p-3 flex justify-between items-center shadow-sm">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-lg">{student.username}</span>
+                          {student.isOnline ? (
+                             <span className="bg-green-500 text-white text-[10px] px-2 py-0.5 rounded-full border border-black font-bold animate-pulse">ONLINE</span>
+                          ) : (
+                             <span className="bg-gray-300 text-gray-600 text-[10px] px-2 py-0.5 rounded-full border border-black font-bold">OFFLINE</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500">Terakhir aktif: {formatLastActive(student.lastActive)}</p>
+                      </div>
+                      <button 
+                        onClick={() => handleDeleteStudent(student.id)}
+                        className="bg-red-100 hover:bg-red-400 border-2 border-black p-2 transition-colors"
+                        title="Hapus Siswa"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -381,22 +560,22 @@ const App: React.FC = () => {
       <header className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4 border-b-4 border-black pb-6">
         <div>
           <h1 className="text-4xl md:text-5xl font-black uppercase">
-            Hello, {currentUser?.username}!
+            Halo, {currentUser?.username}!
           </h1>
-          <p className="font-medium text-gray-600 mt-2">Ready to learn something new today?</p>
+          <p className="font-medium text-gray-600 mt-2">Siap belajar hari ini?</p>
         </div>
         <NeoButton variant="danger" size="sm" onClick={handleLogout}>
-          <LogOut size={16} className="inline mr-2"/> LOGOUT
+          <LogOut size={16} className="inline mr-2"/> KELUAR
         </NeoButton>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
         <div className="md:col-span-1">
-          <NeoCard title="Join a Class" color="blue">
+          <NeoCard title="Gabung Kelas" color="blue">
             <form onSubmit={handleJoinClass} className="flex flex-col gap-4">
-              <p className="text-sm font-medium">Got a code from your teacher?</p>
+              <p className="text-sm font-medium">Punya kode kelas dari guru?</p>
               <NeoInput 
-                placeholder="Enter 6-char code" 
+                placeholder="Kode 6 digit" 
                 className="text-center uppercase tracking-widest text-xl"
                 maxLength={6}
                 value={joinCode}
@@ -404,7 +583,7 @@ const App: React.FC = () => {
               />
               {error && <p className="text-red-600 font-bold text-sm bg-red-100 p-1 border border-red-500">{error}</p>}
               <NeoButton type="submit" variant="primary" disabled={isLoading}>
-                JOIN NOW
+                GABUNG SEKARANG
               </NeoButton>
             </form>
           </NeoCard>
@@ -412,12 +591,12 @@ const App: React.FC = () => {
 
         <div className="md:col-span-2">
            <h2 className="text-3xl font-black mb-6 flex items-center gap-3">
-             <School size={32}/> MY CLASSES
+             <School size={32}/> KELAS SAYA
            </h2>
            
            {myClasses.length === 0 ? (
              <div className="bg-gray-100 border-2 border-black border-dashed p-8 text-center">
-               <p className="text-xl font-bold text-gray-500">You haven't joined any classes yet.</p>
+               <p className="text-xl font-bold text-gray-500">Kamu belum bergabung di kelas manapun.</p>
              </div>
            ) : (
              <div className="grid gap-4">
@@ -425,7 +604,10 @@ const App: React.FC = () => {
                  <div 
                     key={cls.id} 
                     className="group cursor-pointer"
-                    onClick={() => setViewState({ currentView: 'CLASS_DETAIL', selectedClassId: cls.id })}
+                    onClick={() => {
+                        setCurrentClass(cls);
+                        setViewState({ currentView: 'CLASS_DETAIL', selectedClassId: cls.id });
+                    }}
                  >
                    <div className="bg-white border-2 border-black p-6 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-yellow-100 transition-colors flex justify-between items-center">
                      <div>
@@ -444,9 +626,8 @@ const App: React.FC = () => {
   );
 
   const renderClassDetail = () => {
-    if (!currentClass) return <div>Loading...</div>;
-
-    const materials: Material[] = currentClass.materials ? (Object.values(currentClass.materials) as Material[]) : [];
+    if (!currentClass) return <div>Memuat...</div>;
+    const weeks: Week[] = currentClass.weeks ? Object.values(currentClass.weeks) : [];
 
     return (
       <div className="p-4 md:p-8 max-w-4xl mx-auto">
@@ -457,85 +638,210 @@ const App: React.FC = () => {
           })}
           className="mb-6"
         >
-          ← BACK TO DASHBOARD
+          ← KEMBALI
         </NeoButton>
 
         <div className="bg-yellow-400 border-4 border-black p-6 mb-8 shadow-[8px_8px_0px_0px_#000]">
-          <h1 className="text-4xl md:text-6xl font-black uppercase mb-2">{currentClass.name}</h1>
-          <p className="text-xl font-bold font-mono border-t-2 border-black pt-2 inline-block">
-            {currentClass.description}
-          </p>
+          <h1 className="text-4xl md:text-5xl font-black uppercase mb-2">{currentClass.name}</h1>
+          <p className="font-bold border-t-2 border-black pt-2">{currentClass.description}</p>
           {currentUser?.role === UserRole.ADMIN && (
              <div className="mt-4 bg-white border-2 border-black p-2 inline-block">
-               <span className="font-bold mr-2">ACCESS CODE:</span>
+               <span className="font-bold mr-2">KODE AKSES:</span>
                <span className="font-mono text-xl tracking-widest">{currentClass.accessCode}</span>
              </div>
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          <div className="md:col-span-2 space-y-6">
-            <h2 className="text-3xl font-black bg-white border-2 border-black inline-block px-4 py-1">
-              MATERIALS & EXERCISES
-            </h2>
-            
-            {materials.length === 0 ? (
-              <p className="italic text-gray-500 font-bold">No materials uploaded yet.</p>
-            ) : (
-              materials.map((mat) => (
-                <div key={mat.id} className="bg-white border-2 border-black p-5 shadow-[4px_4px_0px_0px_#000]">
-                  <div className="flex justify-between items-start mb-2">
-                    <h3 className="text-xl font-bold">{mat.title}</h3>
-                    <NeoBadge color={mat.type === 'note' ? 'bg-blue-300' : 'bg-pink-300'}>
-                      {mat.type.toUpperCase()}
-                    </NeoBadge>
+        <div className="flex justify-between items-center mb-6">
+           <h2 className="text-3xl font-black bg-white border-2 border-black px-4 py-1 inline-block">DAFTAR MINGGU</h2>
+           {currentUser?.role === UserRole.ADMIN && (
+             <NeoButton size="sm" onClick={() => document.getElementById('addWeekForm')?.scrollIntoView()}>
+               <Plus size={16}/> MINGGU BARU
+             </NeoButton>
+           )}
+        </div>
+
+        <div className="grid gap-6">
+          {weeks.length === 0 ? <p className="text-gray-500 italic">Belum ada materi mingguan.</p> : weeks.map(week => (
+            <div key={week.id} className="relative group cursor-pointer" 
+                 onClick={() => {
+                   setCurrentWeek(week);
+                   setViewState({ currentView: 'WEEK_DETAIL', selectedClassId: currentClass.id, selectedWeekId: week.id });
+                 }}>
+              <div className="absolute top-0 left-0 w-full h-full bg-blue-400 border-2 border-black translate-x-1 translate-y-1 z-0"></div>
+              <div className="relative z-10 bg-white border-2 border-black p-6 flex justify-between items-center hover:-translate-y-1 hover:-translate-x-1 transition-transform">
+                <div className="flex items-center gap-4">
+                  <div className="bg-black text-white p-3">
+                    <Folder size={24} />
                   </div>
-                  <div className="prose prose-sm max-w-none border-t-2 border-gray-100 pt-2 font-medium">
-                    {mat.content.split('\n').map((line, i) => (
-                      <p key={i}>{line}</p>
-                    ))}
+                  <div>
+                    <h3 className="text-xl font-black uppercase">{week.title}</h3>
+                    <p className="text-sm text-gray-600">{week.description}</p>
+                    <p className="text-xs font-bold mt-2 bg-yellow-200 inline-block px-1">
+                      {week.items ? Object.keys(week.items).length : 0} Item Materi/Soal
+                    </p>
                   </div>
                 </div>
-              ))
-            )}
+                <ArrowRight size={24}/>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {currentUser?.role === UserRole.ADMIN && (
+          <div id="addWeekForm" className="mt-12 border-t-4 border-dashed border-black pt-8">
+            <h3 className="text-xl font-black mb-4">TAMBAH MINGGU BARU</h3>
+            <form onSubmit={handleAddWeek} className="flex gap-4 items-end bg-gray-100 p-4 border-2 border-black">
+              <NeoInput placeholder="Judul (Misal: Minggu 1)" value={newWeekTitle} onChange={e => setNewWeekTitle(e.target.value)} />
+              <NeoInput placeholder="Deskripsi Singkat" value={newWeekDesc} onChange={e => setNewWeekDesc(e.target.value)} />
+              <NeoButton type="submit" variant="accent"><Plus size={18}/></NeoButton>
+            </form>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderWeekDetail = () => {
+    if (!currentClass || !currentWeek) return <div>Memuat...</div>;
+    const items: WeekItem[] = currentWeek.items ? Object.values(currentWeek.items) : [];
+
+    return (
+      <div className="p-4 md:p-8 max-w-6xl mx-auto">
+        <NeoButton 
+          variant="secondary" 
+          onClick={() => setViewState({ currentView: 'CLASS_DETAIL', selectedClassId: currentClass.id })}
+          className="mb-6"
+        >
+          ← KEMBALI KE KELAS
+        </NeoButton>
+
+        <header className="mb-8 border-b-4 border-black pb-4">
+           <h2 className="text-4xl font-black uppercase">{currentWeek.title}</h2>
+           <p className="text-xl">{currentWeek.description}</p>
+        </header>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Main Content List */}
+          <div className="lg:col-span-2 space-y-8">
+            {items.length === 0 ? <p className="italic">Belum ada materi atau tugas.</p> : items.map((item) => (
+              <div key={item.id} className="bg-white border-2 border-black shadow-[6px_6px_0px_0px_#000]">
+                {/* Header Item */}
+                <div className={`p-4 border-b-2 border-black flex justify-between items-center ${item.type === 'quiz' ? 'bg-pink-100' : 'bg-blue-100'}`}>
+                  <div className="flex items-center gap-3">
+                     {item.type === 'quiz' ? <Clock size={20}/> : <FileText size={20}/>}
+                     <h3 className="text-xl font-bold uppercase">{item.title}</h3>
+                  </div>
+                  <NeoBadge color={item.type === 'quiz' ? 'bg-pink-400' : 'bg-blue-400'}>{item.type === 'quiz' ? 'LATIHAN' : 'MATERI'}</NeoBadge>
+                </div>
+
+                {/* Content Preview / Body */}
+                <div className="p-6">
+                  {item.previewText && (
+                    <div className="mb-4 text-gray-500 font-medium italic border-l-4 border-gray-300 pl-3">
+                      "{item.previewText}"
+                    </div>
+                  )}
+                  
+                  {item.type === 'material' ? (
+                     <div className="prose prose-sm max-w-none">
+                       {item.content.split('\n').map((line, i) => <p key={i}>{line}</p>)}
+                     </div>
+                  ) : (
+                     <div className="bg-gray-50 p-4 border border-black text-center">
+                        <p className="font-bold mb-2">Durasi: {item.durationMinutes} Menit</p>
+                        <p className="text-sm mb-4">{item.content}</p>
+                        {currentUser?.role === UserRole.STUDENT && (
+                          <NeoButton variant="primary" onClick={() => handleStartQuiz(item.id, item.durationMinutes || 10)}>
+                             MULAI KERJAKAN
+                          </NeoButton>
+                        )}
+                        {currentUser?.role === UserRole.ADMIN && (
+                          <div className="text-sm bg-yellow-100 p-2 border border-black inline-block">
+                             Soal: {item.questions ? Object.keys(item.questions).length : 0} butir. 
+                             <button className="underline ml-2 font-bold" onClick={() => {
+                                setEditingQuizId(item.id);
+                                alert("Mode edit soal aktif di panel kanan!");
+                             }}>Tambah Soal</button>
+                          </div>
+                        )}
+                     </div>
+                  )}
+                </div>
+
+                {/* Comments Section */}
+                <div className="bg-gray-50 border-t-2 border-black p-4">
+                  <CommentSection 
+                    classId={currentClass.id} 
+                    weekId={currentWeek.id} 
+                    itemId={item.id} 
+                    user={currentUser!}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
 
+          {/* Sidebar Admin Tools */}
           {currentUser?.role === UserRole.ADMIN && (
-            <div className="md:col-span-1">
-              <NeoCard title="Add Content" color="green" className="sticky top-4">
-                <form onSubmit={handleAddMaterial} className="flex flex-col gap-3">
-                  <NeoInput 
-                    placeholder="Title" 
-                    value={newMatTitle}
-                    onChange={e => setNewMatTitle(e.target.value)}
-                  />
+            <div className="lg:col-span-1 space-y-6">
+              <NeoCard title="Tambah Item" color="green" className="sticky top-4">
+                <form onSubmit={handleAddItemToWeek} className="flex flex-col gap-3">
+                  <NeoInput placeholder="Judul Item" value={newItemTitle} onChange={e => setNewItemTitle(e.target.value)} />
+                  
                   <div className="flex gap-2">
-                    <button 
-                      type="button"
-                      className={`flex-1 border-2 border-black font-bold py-1 ${newMatType === 'note' ? 'bg-blue-400' : 'bg-white'}`}
-                      onClick={() => setNewMatType('note')}
-                    >
-                      NOTE
-                    </button>
-                    <button 
-                      type="button"
-                      className={`flex-1 border-2 border-black font-bold py-1 ${newMatType === 'exercise' ? 'bg-pink-400' : 'bg-white'}`}
-                      onClick={() => setNewMatType('exercise')}
-                    >
-                      EXERCISE
-                    </button>
+                    <button type="button" onClick={() => setNewItemType('material')} className={`flex-1 border-2 border-black font-bold py-2 ${newItemType === 'material' ? 'bg-blue-400' : 'bg-white'}`}>MATERI</button>
+                    <button type="button" onClick={() => setNewItemType('quiz')} className={`flex-1 border-2 border-black font-bold py-2 ${newItemType === 'quiz' ? 'bg-pink-400' : 'bg-white'}`}>KUIS</button>
                   </div>
-                  <NeoTextArea 
-                    placeholder="Content..." 
-                    rows={4}
-                    value={newMatContent}
-                    onChange={e => setNewMatContent(e.target.value)}
-                  />
-                  <NeoButton type="submit" size="sm" disabled={isLoading}>
-                    <Plus size={16} className="inline"/> ADD
-                  </NeoButton>
+
+                  <NeoInput placeholder="Teks Preview (Thumbnail)" value={newItemPreview} onChange={e => setNewItemPreview(e.target.value)} />
+                  <NeoTextArea placeholder={newItemType === 'quiz' ? "Deskripsi instruksi kuis..." : "Isi materi lengkap..."} rows={4} value={newItemDesc} onChange={e => setNewItemDesc(e.target.value)} />
+                  
+                  {newItemType === 'quiz' && (
+                    <NeoInput type="number" label="Durasi (Menit)" value={quizDuration} onChange={e => setQuizDuration(Number(e.target.value))} />
+                  )}
+
+                  <NeoButton type="submit" size="sm"><Plus size={16}/> TAMBAH</NeoButton>
                 </form>
               </NeoCard>
+
+              {editingQuizId && (
+                <NeoCard title="Editor Soal" color="yellow" className="border-4 border-dashed">
+                   <p className="text-xs mb-2 font-bold">Menambah soal untuk ID: ...{editingQuizId.slice(-4)}</p>
+                   <form onSubmit={handleAddQuestion} className="flex flex-col gap-3">
+                      <NeoTextArea placeholder="Pertanyaan..." value={newQText} onChange={e => setNewQText(e.target.value)} />
+                      <select className="border-2 border-black p-2 font-bold" value={newQType} onChange={(e: any) => setNewQType(e.target.value)}>
+                        <option value="multiple_choice">Pilihan Ganda</option>
+                        <option value="essay">Essay / Isian</option>
+                      </select>
+                      
+                      {newQType === 'multiple_choice' && (
+                        <div className="space-y-1">
+                          {newQOptions.map((opt, idx) => (
+                            <input 
+                              key={idx} 
+                              className="w-full border-2 border-black p-1 text-sm" 
+                              placeholder={`Opsi ${String.fromCharCode(65+idx)}`}
+                              value={opt}
+                              onChange={e => {
+                                const newOpts = [...newQOptions];
+                                newOpts[idx] = e.target.value;
+                                setNewQOptions(newOpts);
+                              }}
+                            />
+                          ))}
+                          <NeoInput placeholder="Jawaban Benar (Teks Persis)" value={newQCorrect} onChange={e => setNewQCorrect(e.target.value)} />
+                        </div>
+                      )}
+                      
+                      <NeoInput type="number" label="Poin Skor" value={newQScore} onChange={e => setNewQScore(Number(e.target.value))} />
+                      <div className="flex gap-2">
+                        <NeoButton type="submit" size="sm" variant="primary">SIMPAN SOAL</NeoButton>
+                        <NeoButton type="button" size="sm" variant="danger" onClick={() => setEditingQuizId(null)}>BATAL</NeoButton>
+                      </div>
+                   </form>
+                </NeoCard>
+              )}
             </div>
           )}
         </div>
@@ -543,12 +849,179 @@ const App: React.FC = () => {
     );
   };
 
+  const renderTakeQuiz = () => {
+    if (!currentClass || !currentWeek || !viewState.selectedQuizId) return null;
+    const quizItem = currentWeek.items ? currentWeek.items[viewState.selectedQuizId] : null;
+    if (!quizItem || !quizItem.questions) return <div>Soal tidak ditemukan atau kosong.</div>;
+
+    const questions = Object.values(quizItem.questions) as Question[];
+
+    return (
+      <div className="min-h-screen bg-pink-50 p-4 md:p-8">
+         <div className="max-w-3xl mx-auto">
+            <div className="sticky top-4 z-50 bg-black text-white p-4 flex justify-between items-center shadow-[4px_4px_0px_0px_#fff]">
+               <h2 className="font-bold text-xl truncate">{quizItem.title}</h2>
+               <div className="flex items-center gap-2 font-mono text-2xl text-yellow-400">
+                 <Clock /> {formatTime(quizTimer)}
+               </div>
+            </div>
+
+            <div className="mt-8 space-y-6">
+              {questions.map((q, idx) => (
+                <NeoCard key={q.id} className="relative">
+                  <div className="absolute -left-4 -top-4 bg-yellow-400 border-2 border-black w-10 h-10 flex items-center justify-center font-black rounded-full z-10">
+                    {idx + 1}
+                  </div>
+                  <div className="mt-2 mb-4 font-bold text-lg">{q.text}</div>
+                  
+                  {q.type === 'multiple_choice' ? (
+                    <div className="space-y-2">
+                      {q.options?.map((opt, i) => (
+                        <label key={i} className={`flex items-center gap-3 p-3 border-2 border-black cursor-pointer hover:bg-gray-100 ${quizAnswers[q.id] === opt ? 'bg-blue-200 hover:bg-blue-300' : 'bg-white'}`}>
+                          <input 
+                            type="radio" 
+                            name={q.id} 
+                            value={opt} 
+                            checked={quizAnswers[q.id] === opt}
+                            onChange={() => setQuizAnswers({...quizAnswers, [q.id]: opt})}
+                            className="w-5 h-5 accent-black"
+                          />
+                          <span className="font-medium">{opt}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <NeoTextArea 
+                      placeholder="Ketik jawabanmu di sini..." 
+                      value={quizAnswers[q.id] || ''}
+                      onChange={(e) => setQuizAnswers({...quizAnswers, [q.id]: e.target.value})}
+                    />
+                  )}
+                </NeoCard>
+              ))}
+            </div>
+
+            <div className="mt-8 flex justify-end">
+              <NeoButton size="lg" variant="primary" onClick={handleSubmitQuiz}>
+                 KIRIM JAWABAN <CheckCircle className="inline ml-2"/>
+              </NeoButton>
+            </div>
+         </div>
+      </div>
+    );
+  };
+
   return (
-    <div className="min-h-screen text-black pb-10">
+    <div className="min-h-screen text-black pb-10 font-sans">
       {viewState.currentView === 'LOGIN' && renderLogin()}
       {viewState.currentView === 'ADMIN_DASHBOARD' && renderAdminDashboard()}
       {viewState.currentView === 'STUDENT_DASHBOARD' && renderStudentDashboard()}
       {viewState.currentView === 'CLASS_DETAIL' && renderClassDetail()}
+      {viewState.currentView === 'WEEK_DETAIL' && renderWeekDetail()}
+      {viewState.currentView === 'TAKE_QUIZ' && renderTakeQuiz()}
+    </div>
+  );
+};
+
+// --- SUB-COMPONENTS ---
+
+const CommentSection: React.FC<{
+  classId: string, weekId: string, itemId: string, user: User
+}> = ({ classId, weekId, itemId, user }) => {
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [input, setInput] = useState('');
+  const [studentThreads, setStudentThreads] = useState<string[]>([]); // IDs of students who chatted
+  const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
+
+  // If Admin, load list of students who have chatted
+  useEffect(() => {
+    if (user.role === UserRole.ADMIN) {
+      API.fetchAllStudentThreads(classId, weekId, itemId).then(data => {
+        if (data) setStudentThreads(Object.keys(data));
+      });
+    } else {
+      // Student only sees their own chat
+      setSelectedStudentId(user.id);
+    }
+  }, [user, classId, weekId, itemId]);
+
+  // Subscribe to chat messages
+  useEffect(() => {
+    if (!selectedStudentId && user.role === UserRole.STUDENT) return;
+    
+    // If admin hasn't selected a student, don't sub yet
+    const targetId = user.role === UserRole.ADMIN ? selectedStudentId : user.id;
+    if (!targetId) return;
+
+    const unsub = API.subscribeToComments(classId, weekId, itemId, targetId, (data) => {
+      setComments(data);
+    });
+    return () => unsub();
+  }, [classId, weekId, itemId, selectedStudentId, user]);
+
+  const send = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input) return;
+    const targetId = user.role === UserRole.ADMIN ? selectedStudentId : user.id;
+    if (!targetId) return;
+
+    await API.sendComment(classId, weekId, itemId, targetId, {
+      senderId: user.id,
+      senderName: user.username,
+      role: user.role,
+      text: input,
+      timestamp: Date.now()
+    });
+    setInput('');
+  };
+
+  return (
+    <div>
+       <h4 className="font-bold flex items-center gap-2 mb-2">
+         <MessageCircle size={18}/> DISKUSI PRIVAT
+       </h4>
+       
+       {user.role === UserRole.ADMIN && (
+         <div className="mb-4 flex gap-2 overflow-x-auto pb-2">
+            {studentThreads.length === 0 && <span className="text-xs text-gray-400">Belum ada diskusi.</span>}
+            {studentThreads.map(sid => (
+               <button 
+                 key={sid}
+                 onClick={() => setSelectedStudentId(sid)}
+                 className={`px-3 py-1 text-xs font-bold border-2 border-black ${selectedStudentId === sid ? 'bg-yellow-300' : 'bg-white'}`}
+               >
+                 Siswa ID: {sid.slice(-4)}
+               </button>
+            ))}
+         </div>
+       )}
+
+       {(user.role === UserRole.STUDENT || selectedStudentId) ? (
+         <>
+            <div className="max-h-48 overflow-y-auto space-y-2 mb-2 bg-white border border-black p-2">
+              {comments.length === 0 && <p className="text-xs text-gray-400 text-center">Belum ada pesan. Tanyakan sesuatu pada guru!</p>}
+              {comments.map(c => (
+                <div key={c.id} className={`flex flex-col ${c.role === user.role ? 'items-end' : 'items-start'}`}>
+                   <div className={`max-w-[80%] p-2 border border-black text-sm ${c.role === UserRole.ADMIN ? 'bg-yellow-200' : 'bg-gray-200'}`}>
+                      <span className="font-bold text-[10px] block mb-1">{c.senderName}</span>
+                      {c.text}
+                   </div>
+                </div>
+              ))}
+            </div>
+            <form onSubmit={send} className="flex gap-2">
+               <input 
+                 className="flex-1 border-2 border-black px-2 py-1 text-sm outline-none"
+                 placeholder="Tulis pesan..."
+                 value={input}
+                 onChange={e => setInput(e.target.value)}
+               />
+               <NeoButton size="sm" type="submit" variant="secondary">KIRIM</NeoButton>
+            </form>
+         </>
+       ) : (
+         <p className="text-sm italic bg-gray-200 p-2">Pilih siswa untuk melihat percakapan.</p>
+       )}
     </div>
   );
 };

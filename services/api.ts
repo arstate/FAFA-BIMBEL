@@ -1,6 +1,7 @@
-import { ref, set, push, get, child, update, remove } from "firebase/database";
+
+import { ref, set, push, get, child, update, remove, onDisconnect, onValue, serverTimestamp } from "firebase/database";
 import { db } from "../firebaseConfig";
-import { User, ClassSession, Material, UserRole } from "../types";
+import { User, ClassSession, UserRole, Week, WeekItem, Question, Comment } from "../types";
 
 // --- UTILS ---
 const generateAccessCode = (): string => {
@@ -10,6 +11,30 @@ const generateAccessCode = (): string => {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return result;
+};
+
+// --- PRESENCE SYSTEM ---
+export const initPresence = (userId: string) => {
+  const userStatusDatabaseRef = ref(db, `/users/${userId}`);
+  const connectedRef = ref(db, '.info/connected');
+
+  onValue(connectedRef, (snapshot) => {
+    if (snapshot.val() === false) {
+      return;
+    }
+    
+    // Jika disconnect (tutup tab), set offline
+    onDisconnect(userStatusDatabaseRef).update({
+      isOnline: false,
+      lastActive: serverTimestamp()
+    }).then(() => {
+      // Jika connect, set online
+      update(userStatusDatabaseRef, {
+        isOnline: true,
+        lastActive: serverTimestamp()
+      });
+    });
+  });
 };
 
 // --- ADMIN API ---
@@ -30,20 +55,31 @@ export const createClass = async (name: string, description: string): Promise<st
   return accessCode;
 };
 
+export const fetchAllUsers = async (): Promise<User[]> => {
+  const snapshot = await get(child(ref(db), 'users'));
+  if (snapshot.exists()) {
+    return Object.values(snapshot.val());
+  }
+  return [];
+};
+
+export const deleteUser = async (userId: string) => {
+  await remove(ref(db, `users/${userId}`));
+};
+
 export const createStudent = async (username: string, password: string): Promise<boolean> => {
-  // Check if username exists
   const snapshot = await get(child(ref(db), 'users'));
   if (snapshot.exists()) {
     const users = snapshot.val();
     const exists = Object.values(users).some((u: any) => u.username === username);
-    if (exists) throw new Error("Username already taken");
+    if (exists) throw new Error("Username sudah dipakai!");
   }
 
   const userRef = push(ref(db, 'users'));
   const newUser: User = {
     id: userRef.key as string,
     username,
-    password, // Note: In production, hash this!
+    password, 
     role: UserRole.STUDENT,
     joinedClasses: {}
   };
@@ -52,16 +88,88 @@ export const createStudent = async (username: string, password: string): Promise
   return true;
 };
 
-export const addMaterialToClass = async (classId: string, title: string, content: string, type: 'note' | 'exercise') => {
-  const materialRef = push(ref(db, `classes/${classId}/materials`));
-  const newMaterial: Material = {
-    id: materialRef.key as string,
+// --- CONTENT MANAGEMENT (WEEKS & ITEMS) ---
+
+export const addWeekToClass = async (classId: string, title: string, description: string) => {
+  const weekRef = push(ref(db, `classes/${classId}/weeks`));
+  const newWeek: Week = {
+    id: weekRef.key as string,
     title,
-    content,
-    type
+    description
   };
-  await set(materialRef, newMaterial);
+  await set(weekRef, newWeek);
 };
+
+export const addItemToWeek = async (
+  classId: string, 
+  weekId: string, 
+  item: Omit<WeekItem, 'id'>
+) => {
+  const itemRef = push(ref(db, `classes/${classId}/weeks/${weekId}/items`));
+  const newItem: WeekItem = {
+    ...item,
+    id: itemRef.key as string
+  };
+  await set(itemRef, newItem);
+};
+
+export const addQuestionToQuiz = async (
+  classId: string,
+  weekId: string,
+  quizId: string,
+  question: Omit<Question, 'id'>
+) => {
+  const qRef = push(ref(db, `classes/${classId}/weeks/${weekId}/items/${quizId}/questions`));
+  const newQ: Question = {
+    ...question,
+    id: qRef.key as string
+  };
+  await set(qRef, newQ);
+};
+
+// --- COMMENTS ---
+
+export const sendComment = async (
+  classId: string, 
+  weekId: string, 
+  itemId: string, 
+  studentId: string, // Thread ID (tiap siswa punya thread sendiri dgn guru)
+  comment: Omit<Comment, 'id'>
+) => {
+  const commentRef = push(ref(db, `classes/${classId}/weeks/${weekId}/items/${itemId}/comments/${studentId}`));
+  const newComment: Comment = {
+    ...comment,
+    id: commentRef.key as string
+  };
+  await set(commentRef, newComment);
+};
+
+export const subscribeToComments = (
+  classId: string, 
+  weekId: string, 
+  itemId: string, 
+  studentId: string,
+  callback: (comments: Comment[]) => void
+) => {
+  const commentsRef = ref(db, `classes/${classId}/weeks/${weekId}/items/${itemId}/comments/${studentId}`);
+  return onValue(commentsRef, (snapshot) => {
+    if (snapshot.exists()) {
+      callback(Object.values(snapshot.val()));
+    } else {
+      callback([]);
+    }
+  });
+};
+
+export const fetchAllStudentThreads = async (classId: string, weekId: string, itemId: string) => {
+  const snapshot = await get(child(ref(db), `classes/${classId}/weeks/${weekId}/items/${itemId}/comments`));
+  if (snapshot.exists()) {
+    return snapshot.val(); // Returns object { studentId: { commentId: Comment } }
+  }
+  return {};
+};
+
+// --- DATA FETCHING ---
 
 export const fetchAllClasses = async (): Promise<ClassSession[]> => {
   const snapshot = await get(child(ref(db), 'classes'));
@@ -70,8 +178,6 @@ export const fetchAllClasses = async (): Promise<ClassSession[]> => {
   }
   return [];
 };
-
-// --- STUDENT API ---
 
 export const loginStudent = async (username: string, password: string): Promise<User | null> => {
   const snapshot = await get(child(ref(db), 'users'));
@@ -84,16 +190,14 @@ export const loginStudent = async (username: string, password: string): Promise<
 };
 
 export const joinClass = async (userId: string, accessCode: string): Promise<string> => {
-  // 1. Find class by code
   const snapshot = await get(child(ref(db), 'classes'));
-  if (!snapshot.exists()) throw new Error("No classes found");
+  if (!snapshot.exists()) throw new Error("Tidak ada kelas ditemukan");
   
   const classes = snapshot.val();
   const foundClass = Object.values(classes).find((c: any) => c.accessCode === accessCode) as ClassSession;
   
-  if (!foundClass) throw new Error("Invalid Access Code");
+  if (!foundClass) throw new Error("Kode Akses Salah");
 
-  // 2. Add to user's joinedClasses
   await update(ref(db, `users/${userId}/joinedClasses`), {
     [foundClass.id]: true
   });
@@ -110,7 +214,6 @@ export const fetchMyClasses = async (userId: string): Promise<ClassSession[]> =>
 
   const classIds = Object.keys(userData.joinedClasses);
   
-  // Fetch all classes then filter (Optimized for small scale)
   const classesSnapshot = await get(child(ref(db), 'classes'));
   if (!classesSnapshot.exists()) return [];
   

@@ -17,13 +17,14 @@ export const getGeminiApiKey = async (): Promise<string | null> => {
   return null;
 };
 
-export const testGeminiConnection = async (apiKey: string): Promise<{ success: boolean; message: string }> => {
+export const testGeminiConnection = async (apiKey: string, customMessage?: string): Promise<{ success: boolean; message: string }> => {
   try {
     const ai = new GoogleGenAI({ apiKey });
     // Test prompt with conversational response
+    const prompt = customMessage || 'Halo! Sapa saya sebagai asisten guru dengan antusias dalam satu kalimat pendek.';
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: 'Halo! Sapa saya sebagai asisten guru dengan antusias dalam satu kalimat pendek.',
+      contents: prompt,
     });
     return { success: true, message: response.text || "Tidak ada teks balasan." };
   } catch (error: any) {

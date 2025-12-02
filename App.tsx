@@ -63,6 +63,7 @@ const App: React.FC = () => {
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [keyStatus, setKeyStatus] = useState<'NONE' | 'VALID' | 'INVALID'>('NONE');
   const [testResponse, setTestResponse] = useState('');
+  const [testMessage, setTestMessage] = useState('Halo AI, coba balas pesan saya!');
 
   // --- CLASS & CONTENT STATE ---
   const [currentClass, setCurrentClass] = useState<ClassSession | null>(null);
@@ -321,7 +322,7 @@ const App: React.FC = () => {
     setKeyStatus('NONE');
     setTestResponse('');
     
-    const result = await API.testGeminiConnection(apiKeyInput);
+    const result = await API.testGeminiConnection(apiKeyInput, testMessage);
     
     setKeyStatus(result.success ? 'VALID' : 'INVALID');
     setTestResponse(result.message);
@@ -728,17 +729,29 @@ const App: React.FC = () => {
                      }}
                      type="password"
                    />
-                   <div className="flex gap-2">
-                      <NeoButton type="submit" disabled={isLoading}>SIMPAN KEY</NeoButton>
-                      <button 
-                        type="button" 
-                        onClick={handleTestApiKey}
-                        disabled={!apiKeyInput || isTestingKey}
-                        className="bg-white border-2 border-black px-4 py-2 font-bold flex items-center gap-2 hover:bg-gray-100 disabled:opacity-50"
-                      >
-                         {isTestingKey ? <Loader2 className="animate-spin" size={16}/> : <Wifi size={16}/>} 
-                         TES KONEKSI & CHAT
-                      </button>
+                   
+                   <div className="border-t-2 border-black my-2"></div>
+                   
+                   <div>
+                     <p className="text-sm font-bold mb-2 uppercase">Tes Koneksi & Chat AI</p>
+                     <NeoInput 
+                       placeholder="Ketik pesan tes (misal: Halo AI!)..." 
+                       value={testMessage}
+                       onChange={e => setTestMessage(e.target.value)}
+                       className="mb-2"
+                     />
+                     <div className="flex gap-2">
+                        <NeoButton type="submit" disabled={isLoading}>SIMPAN KEY</NeoButton>
+                        <button 
+                          type="button" 
+                          onClick={handleTestApiKey}
+                          disabled={!apiKeyInput || isTestingKey}
+                          className="bg-white border-2 border-black px-4 py-2 font-bold flex items-center gap-2 hover:bg-gray-100 disabled:opacity-50"
+                        >
+                           {isTestingKey ? <Loader2 className="animate-spin" size={16}/> : <Wifi size={16}/>} 
+                           KIRIM & TES
+                        </button>
+                     </div>
                    </div>
                  </form>
 

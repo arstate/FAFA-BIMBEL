@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   User, 
@@ -8,7 +7,8 @@ import {
   Week,
   WeekItem,
   Question,
-  Comment
+  Comment,
+  QuizResult
 } from './types';
 import { NeoButton, NeoInput, NeoCard, NeoTextArea, NeoBadge } from './components/NeoUI';
 import * as API from './services/api';
@@ -28,7 +28,9 @@ import {
   CheckCircle,
   Trash2,
   Circle,
-  PlayCircle
+  PlayCircle,
+  BarChart2,
+  XCircle
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = '1509';
@@ -73,6 +75,11 @@ const App: React.FC = () => {
   // Student taking quiz
   const [quizTimer, setQuizTimer] = useState(0);
   const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>({});
+  const [studentQuizResult, setStudentQuizResult] = useState<QuizResult | null>(null); // Status if student took quiz
+
+  // Teacher viewing report
+  const [reportQuizId, setReportQuizId] = useState<string | null>(null);
+  const [reportResults, setReportResults] = useState<QuizResult[]>([]);
 
   // --- COMMENTS STATE ---
   const [activeComments, setActiveComments] = useState<Comment[]>([]);
@@ -289,13 +296,19 @@ const App: React.FC = () => {
     e.preventDefault();
     if (!currentClass || !currentWeek || !newItemTitle) return;
     
-    await API.addItemToWeek(currentClass.id, currentWeek.id, {
+    // Construct payload ensuring no undefined values are passed to Firebase
+    const newItemPayload: any = {
       title: newItemTitle,
       content: newItemDesc,
       previewText: newItemPreview,
       type: newItemType,
-      durationMinutes: newItemType === 'quiz' ? quizDuration : undefined
-    });
+    };
+
+    if (newItemType === 'quiz') {
+      newItemPayload.durationMinutes = quizDuration;
+    }
+    
+    await API.addItemToWeek(currentClass.id, currentWeek.id, newItemPayload);
 
     setNewItemTitle('');
     setNewItemDesc('');
@@ -308,13 +321,19 @@ const App: React.FC = () => {
     e.preventDefault();
     if (!currentClass || !currentWeek || !editingQuizId || !newQText) return;
 
-    await API.addQuestionToQuiz(currentClass.id, currentWeek.id, editingQuizId, {
+    // Construct payload ensuring no undefined values are passed to Firebase
+    const questionPayload: any = {
       text: newQText,
       type: newQType,
       score: newQScore,
-      options: newQType === 'multiple_choice' ? newQOptions : undefined,
       correctAnswer: newQCorrect
-    });
+    };
+
+    if (newQType === 'multiple_choice') {
+      questionPayload.options = newQOptions;
+    }
+
+    await API.addQuestionToQuiz(currentClass.id, currentWeek.id, editingQuizId, questionPayload);
 
     // Reset form
     setNewQText('');
@@ -347,11 +366,60 @@ const App: React.FC = () => {
     setQuizAnswers({});
   };
 
-  const handleSubmitQuiz = () => {
-    alert("Latihan Soal Selesai! Jawaban tersimpan (Demo Mode).");
+  const handleSubmitQuiz = async () => {
+    if (!currentClass || !currentWeek || !viewState.selectedQuizId || !currentUser) return;
+    
+    const quizItem = currentWeek.items?.[viewState.selectedQuizId];
+    if (!quizItem || !quizItem.questions) return;
+    
+    const questions = Object.values(quizItem.questions) as Question[];
+    let correctCount = 0;
+
+    // Auto grading logic
+    questions.forEach(q => {
+      const studentAns = quizAnswers[q.id];
+      if (q.type === 'multiple_choice' && studentAns === q.correctAnswer) {
+        correctCount++;
+      }
+      // Essay tidak dihitung otomatis untuk skor 100 base, 
+      // tapi disimpan. Guru bisa koreksi manual nanti.
+      // Di sini kita asumsikan skor hanya berbasis soal pilihan ganda
+      // atau skor 0 untuk essay sementara.
+    });
+
+    const totalQuestions = questions.length;
+    // Calculate score (0-100)
+    const finalScore = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+
+    const resultPayload: QuizResult = {
+      studentId: currentUser.id,
+      studentName: currentUser.username,
+      score: finalScore,
+      answers: quizAnswers,
+      timestamp: Date.now()
+    };
+
+    await API.submitQuizResult(currentClass.id, currentWeek.id, viewState.selectedQuizId, resultPayload);
+    
+    alert(`Latihan Selesai! Nilai Anda: ${finalScore}`);
+    
     if (currentUser?.role === UserRole.STUDENT) {
-      setViewState({ currentView: 'WEEK_DETAIL', selectedClassId: viewState.selectedClassId, selectedWeekId: viewState.selectedWeekId });
+      // Reload week to show result
+      await loadWeekDetail(currentClass.id, currentWeek.id);
+      setViewState({ 
+        currentView: 'WEEK_DETAIL', 
+        selectedClassId: viewState.selectedClassId, 
+        selectedWeekId: viewState.selectedWeekId 
+      });
     }
+  };
+
+  const handleViewReport = async (quizId: string) => {
+    if (!currentClass || !currentWeek) return;
+    const results = await API.fetchQuizResults(currentClass.id, currentWeek.id, quizId);
+    setReportResults(results);
+    setReportQuizId(quizId);
+    setViewState({ ...viewState, currentView: 'QUIZ_REPORT', selectedQuizId: quizId });
   };
 
   // --- HELPER RENDER ---
@@ -724,68 +792,91 @@ const App: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Main Content List */}
           <div className="lg:col-span-2 space-y-8">
-            {items.length === 0 ? <p className="italic">Belum ada materi atau tugas.</p> : items.map((item) => (
-              <div key={item.id} className="bg-white border-2 border-black shadow-[6px_6px_0px_0px_#000]">
-                {/* Header Item */}
-                <div className={`p-4 border-b-2 border-black flex justify-between items-center ${item.type === 'quiz' ? 'bg-pink-100' : 'bg-blue-100'}`}>
-                  <div className="flex items-center gap-3">
-                     {item.type === 'quiz' ? <Clock size={20}/> : <FileText size={20}/>}
-                     <h3 className="text-xl font-bold uppercase">{item.title}</h3>
-                  </div>
-                  <NeoBadge color={item.type === 'quiz' ? 'bg-pink-400' : 'bg-blue-400'}>{item.type === 'quiz' ? 'LATIHAN' : 'MATERI'}</NeoBadge>
-                </div>
+            {items.length === 0 ? <p className="italic">Belum ada materi atau tugas.</p> : items.map((item) => {
+              // Check result for current student
+              const myResult = currentUser && item.results ? item.results[currentUser.id] : null;
 
-                {/* Content Preview / Body */}
-                <div className="p-6">
-                  {item.previewText && (
-                    <div className="mb-4 text-gray-500 font-medium italic border-l-4 border-gray-300 pl-3">
-                      "{item.previewText}"
+              return (
+                <div key={item.id} className="bg-white border-2 border-black shadow-[6px_6px_0px_0px_#000]">
+                  {/* Header Item */}
+                  <div className={`p-4 border-b-2 border-black flex justify-between items-center ${item.type === 'quiz' ? 'bg-pink-100' : 'bg-blue-100'}`}>
+                    <div className="flex items-center gap-3">
+                       {item.type === 'quiz' ? <Clock size={20}/> : <FileText size={20}/>}
+                       <h3 className="text-xl font-bold uppercase">{item.title}</h3>
                     </div>
-                  )}
-                  
-                  {item.type === 'material' ? (
-                     <div className="prose prose-sm max-w-none">
-                       {item.content.split('\n').map((line, i) => <p key={i}>{line}</p>)}
-                     </div>
-                  ) : (
-                     <div className="bg-gray-50 p-4 border border-black text-center">
-                        <p className="font-bold mb-2">Durasi: {item.durationMinutes} Menit</p>
-                        <p className="text-sm mb-4">{item.content}</p>
-                        {currentUser?.role === UserRole.STUDENT && (
-                          <NeoButton variant="primary" onClick={() => handleStartQuiz(item.id, item.durationMinutes || 10)}>
-                             MULAI KERJAKAN
-                          </NeoButton>
-                        )}
-                        {currentUser?.role === UserRole.ADMIN && (
-                          <div className="text-sm bg-yellow-100 p-2 border border-black inline-block">
-                             Soal: {item.questions ? Object.keys(item.questions).length : 0} butir. 
-                             <button className="underline ml-2 font-bold" onClick={() => {
-                                setEditingQuizId(item.id);
-                                alert("Mode edit soal aktif di panel kanan!");
-                             }}>Tambah Soal</button>
-                          </div>
-                        )}
-                     </div>
-                  )}
-                </div>
+                    <NeoBadge color={item.type === 'quiz' ? 'bg-pink-400' : 'bg-blue-400'}>{item.type === 'quiz' ? 'LATIHAN' : 'MATERI'}</NeoBadge>
+                  </div>
 
-                {/* Comments Section */}
-                <div className="bg-gray-50 border-t-2 border-black p-4">
-                  <CommentSection 
-                    classId={currentClass.id} 
-                    weekId={currentWeek.id} 
-                    itemId={item.id} 
-                    user={currentUser!}
-                  />
+                  {/* Content Preview / Body */}
+                  <div className="p-6">
+                    {item.previewText && (
+                      <div className="mb-4 text-gray-500 font-medium italic border-l-4 border-gray-300 pl-3">
+                        "{item.previewText}"
+                      </div>
+                    )}
+                    
+                    {item.type === 'material' ? (
+                       <div className="prose prose-sm max-w-none">
+                         {item.content.split('\n').map((line, i) => <p key={i}>{line}</p>)}
+                       </div>
+                    ) : (
+                       <div className="bg-gray-50 p-4 border border-black text-center">
+                          <p className="font-bold mb-2">Durasi: {item.durationMinutes} Menit</p>
+                          <p className="text-sm mb-4">{item.content}</p>
+                          
+                          {/* Student Action */}
+                          {currentUser?.role === UserRole.STUDENT && (
+                            <>
+                              {myResult ? (
+                                <div className="bg-green-100 border-2 border-green-600 p-3 inline-block">
+                                  <p className="font-bold text-green-800 mb-1">SUDAH DIKERJAKAN</p>
+                                  <p className="text-2xl font-black">{myResult.score}/100</p>
+                                </div>
+                              ) : (
+                                <NeoButton variant="primary" onClick={() => handleStartQuiz(item.id, item.durationMinutes || 10)}>
+                                   MULAI KERJAKAN
+                                </NeoButton>
+                              )}
+                            </>
+                          )}
+
+                          {/* Admin Action */}
+                          {currentUser?.role === UserRole.ADMIN && (
+                            <div className="flex flex-col gap-2 items-center">
+                              <div className="text-sm bg-yellow-100 p-2 border border-black inline-block">
+                                 Soal: {item.questions ? Object.keys(item.questions).length : 0} butir. 
+                                 <button className="underline ml-2 font-bold" onClick={() => {
+                                    setEditingQuizId(item.id);
+                                    alert("Mode edit soal aktif di panel kanan!");
+                                 }}>Tambah Soal</button>
+                              </div>
+                              <NeoButton variant="secondary" size="sm" onClick={() => handleViewReport(item.id)}>
+                                 <BarChart2 size={16} className="mr-2 inline"/> LIHAT HASIL & NILAI
+                              </NeoButton>
+                            </div>
+                          )}
+                       </div>
+                    )}
+                  </div>
+
+                  {/* Comments Section */}
+                  <div className="bg-gray-50 border-t-2 border-black p-4">
+                    <CommentSection 
+                      classId={currentClass.id} 
+                      weekId={currentWeek.id} 
+                      itemId={item.id} 
+                      user={currentUser!}
+                    />
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Sidebar Admin Tools */}
           {currentUser?.role === UserRole.ADMIN && (
             <div className="lg:col-span-1 space-y-6">
-              <NeoCard title="Tambah Item" color="green" className="sticky top-4">
+              <NeoCard title="Tambah Item" color="green" className="">
                 <form onSubmit={handleAddItemToWeek} className="flex flex-col gap-3">
                   <NeoInput placeholder="Judul Item" value={newItemTitle} onChange={e => setNewItemTitle(e.target.value)} />
                   
@@ -911,6 +1002,86 @@ const App: React.FC = () => {
     );
   };
 
+  const renderQuizReport = () => {
+    if (!currentClass || !currentWeek || !reportQuizId) return <div>Memuat laporan...</div>;
+    const quizItem = currentWeek.items ? currentWeek.items[reportQuizId] : null;
+    const questions = quizItem && quizItem.questions ? (Object.values(quizItem.questions) as Question[]) : [];
+
+    return (
+      <div className="p-4 md:p-8 max-w-6xl mx-auto">
+        <NeoButton 
+          variant="secondary" 
+          onClick={() => setViewState({ 
+             currentView: 'WEEK_DETAIL', 
+             selectedClassId: currentClass.id, 
+             selectedWeekId: currentWeek.id 
+          })}
+          className="mb-6"
+        >
+          ← KEMBALI KE MATERI
+        </NeoButton>
+
+        <NeoCard title={`Laporan Nilai: ${quizItem?.title}`} color="white" className="mb-6">
+          <div className="overflow-x-auto">
+            <table className="w-full border-2 border-black text-left">
+              <thead>
+                <tr className="bg-black text-white">
+                  <th className="p-3 border-r border-gray-700">Nama Siswa</th>
+                  <th className="p-3 border-r border-gray-700">Waktu Submit</th>
+                  <th className="p-3">Nilai Akhir</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reportResults.length === 0 ? (
+                  <tr><td colSpan={3} className="p-4 text-center italic">Belum ada siswa mengerjakan.</td></tr>
+                ) : reportResults.map((res, i) => (
+                  <tr key={i} className="border-b-2 border-black hover:bg-gray-100">
+                     <td className="p-3 font-bold border-r-2 border-black">{res.studentName}</td>
+                     <td className="p-3 border-r-2 border-black">{new Date(res.timestamp).toLocaleString()}</td>
+                     <td className="p-3 font-black text-xl">{res.score}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </NeoCard>
+
+        {reportResults.length > 0 && (
+          <div className="grid gap-6">
+            <h3 className="text-2xl font-black bg-yellow-300 inline-block px-2 border-2 border-black">DETAIL JAWABAN PER SISWA</h3>
+            {reportResults.map((res, i) => (
+               <NeoCard key={i} title={`${res.studentName} (Skor: ${res.score})`} className="border-2 border-dashed">
+                 <div className="grid gap-4">
+                   {questions.map((q, idx) => {
+                     const studentAns = res.answers[q.id];
+                     const isCorrect = q.type === 'multiple_choice' ? studentAns === q.correctAnswer : 'manual';
+                     
+                     return (
+                       <div key={q.id} className="p-3 bg-gray-50 border border-black text-sm">
+                          <p className="font-bold mb-1"><span className="bg-black text-white px-1 mr-2">{idx+1}</span> {q.text}</p>
+                          <div className="flex flex-col gap-1 ml-6">
+                             <p>Jawaban Siswa: <span className="font-mono font-bold">{studentAns || '-'}</span></p>
+                             {q.type === 'multiple_choice' && (
+                               <p className="text-gray-500">Kunci Jawaban: {q.correctAnswer}</p>
+                             )}
+                             <div className="mt-1">
+                               {isCorrect === true && <span className="text-green-600 font-bold flex items-center gap-1"><CheckCircle size={14}/> BENAR</span>}
+                               {isCorrect === false && <span className="text-red-600 font-bold flex items-center gap-1"><XCircle size={14}/> SALAH</span>}
+                               {isCorrect === 'manual' && <span className="text-blue-600 font-bold flex items-center gap-1"><Circle size={14}/> ESSAY (Cek Manual)</span>}
+                             </div>
+                          </div>
+                       </div>
+                     );
+                   })}
+                 </div>
+               </NeoCard>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen text-black pb-10 font-sans">
       {viewState.currentView === 'LOGIN' && renderLogin()}
@@ -919,6 +1090,7 @@ const App: React.FC = () => {
       {viewState.currentView === 'CLASS_DETAIL' && renderClassDetail()}
       {viewState.currentView === 'WEEK_DETAIL' && renderWeekDetail()}
       {viewState.currentView === 'TAKE_QUIZ' && renderTakeQuiz()}
+      {viewState.currentView === 'QUIZ_REPORT' && renderQuizReport()}
     </div>
   );
 };

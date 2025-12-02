@@ -1,7 +1,8 @@
 
+
 import { ref, set, push, get, child, update, remove, onDisconnect, onValue, serverTimestamp } from "firebase/database";
 import { db } from "../firebaseConfig";
-import { User, ClassSession, UserRole, Week, WeekItem, Question, Comment } from "../types";
+import { User, ClassSession, UserRole, Week, WeekItem, Question, Comment, QuizResult } from "../types";
 
 // --- UTILS ---
 const generateAccessCode = (): string => {
@@ -125,6 +126,44 @@ export const addQuestionToQuiz = async (
     id: qRef.key as string
   };
   await set(qRef, newQ);
+};
+
+// --- QUIZ RESULTS ---
+
+export const submitQuizResult = async (
+  classId: string,
+  weekId: string,
+  quizId: string,
+  result: QuizResult
+) => {
+  // Simpan di: classes/{classId}/weeks/{weekId}/items/{quizId}/results/{studentId}
+  const resultRef = ref(db, `classes/${classId}/weeks/${weekId}/items/${quizId}/results/${result.studentId}`);
+  await set(resultRef, result);
+};
+
+export const hasStudentTakenQuiz = async (
+  classId: string,
+  weekId: string,
+  quizId: string,
+  studentId: string
+): Promise<QuizResult | null> => {
+  const snapshot = await get(child(ref(db), `classes/${classId}/weeks/${weekId}/items/${quizId}/results/${studentId}`));
+  if (snapshot.exists()) {
+    return snapshot.val() as QuizResult;
+  }
+  return null;
+};
+
+export const fetchQuizResults = async (
+  classId: string,
+  weekId: string,
+  quizId: string
+): Promise<QuizResult[]> => {
+  const snapshot = await get(child(ref(db), `classes/${classId}/weeks/${weekId}/items/${quizId}/results`));
+  if (snapshot.exists()) {
+    return Object.values(snapshot.val());
+  }
+  return [];
 };
 
 // --- COMMENTS ---

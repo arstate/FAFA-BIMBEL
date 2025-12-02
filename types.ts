@@ -1,4 +1,5 @@
 
+
 export enum UserRole {
   ADMIN = 'ADMIN',
   STUDENT = 'STUDENT'
@@ -25,6 +26,14 @@ export interface Question {
   score: number;
 }
 
+export interface QuizResult {
+  studentId: string;
+  studentName: string;
+  score: number;
+  answers: Record<string, string>; // questionId -> studentAnswer
+  timestamp: number;
+}
+
 export interface WeekItem {
   id: string;
   title: string;
@@ -35,6 +44,7 @@ export interface WeekItem {
   // Khusus Quiz
   durationMinutes?: number;
   questions?: Record<string, Question>; 
+  results?: Record<string, QuizResult>; // studentId -> QuizResult
 }
 
 export interface Week {
@@ -62,8 +72,8 @@ export interface Comment {
 }
 
 export interface ViewState {
-  currentView: 'LOGIN' | 'ADMIN_DASHBOARD' | 'STUDENT_DASHBOARD' | 'CLASS_DETAIL' | 'WEEK_DETAIL' | 'TAKE_QUIZ';
+  currentView: 'LOGIN' | 'ADMIN_DASHBOARD' | 'STUDENT_DASHBOARD' | 'CLASS_DETAIL' | 'WEEK_DETAIL' | 'TAKE_QUIZ' | 'QUIZ_REPORT';
   selectedClassId?: string;
   selectedWeekId?: string;
-  selectedQuizId?: string; // Sedang mengerjakan kuis apa
+  selectedQuizId?: string; // Sedang mengerjakan/melihat kuis apa
 }

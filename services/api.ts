@@ -1,12 +1,10 @@
-
-
 import { ref, set, push, get, child, update, remove, onDisconnect, onValue, serverTimestamp } from "firebase/database";
 import { db } from "../firebaseConfig";
 import { User, ClassSession, UserRole, Week, WeekItem, Question, Comment, QuizResult } from "../types";
 import { GoogleGenAI } from "@google/genai";
 
 // --- AI CONFIG ---
-const GEMINI_API_KEY = "AIzaSyAM5ilqBXb62X4MN-ZM83NpQtOaK_5-9jQ";
+// Fix: Use process.env.API_KEY per guidelines (removed hardcoded key)
 
 export const assessQuizWithAI = async (
   questions: Question[], 
@@ -14,7 +12,8 @@ export const assessQuizWithAI = async (
   detailLevel: 'brief' | 'detailed'
 ): Promise<Record<string, string>> => {
   try {
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    // Fix: Initialize GoogleGenAI with process.env.API_KEY
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     
     // Construct the prompt
     let promptText = `Anda adalah guru privat yang teliti. Koreksi jawaban siswa berikut.\n`;
@@ -107,6 +106,14 @@ export const createClass = async (name: string, description: string): Promise<st
   return accessCode;
 };
 
+export const fetchAllClasses = async (): Promise<ClassSession[]> => {
+  const snapshot = await get(child(ref(db), 'classes'));
+  if (snapshot.exists()) {
+    return Object.values(snapshot.val());
+  }
+  return [];
+};
+
 export const fetchAllUsers = async (): Promise<User[]> => {
   const snapshot = await get(child(ref(db), 'users'));
   if (snapshot.exists()) {
@@ -177,6 +184,15 @@ export const addQuestionToQuiz = async (
     id: qRef.key as string
   };
   await set(qRef, newQ);
+};
+
+export const deleteQuestionFromQuiz = async (
+  classId: string,
+  weekId: string,
+  quizId: string,
+  questionId: string
+) => {
+  await remove(ref(db, `classes/${classId}/weeks/${weekId}/items/${quizId}/questions/${questionId}`));
 };
 
 // --- QUIZ RESULTS ---
@@ -260,14 +276,6 @@ export const fetchAllStudentThreads = async (classId: string, weekId: string, it
 };
 
 // --- DATA FETCHING ---
-
-export const fetchAllClasses = async (): Promise<ClassSession[]> => {
-  const snapshot = await get(child(ref(db), 'classes'));
-  if (snapshot.exists()) {
-    return Object.values(snapshot.val());
-  }
-  return [];
-};
 
 export const loginStudent = async (username: string, password: string): Promise<User | null> => {
   const snapshot = await get(child(ref(db), 'users'));

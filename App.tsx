@@ -32,7 +32,8 @@ import {
   BarChart2,
   XCircle,
   Bot,
-  Loader2
+  Loader2,
+  List
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = '1509';
@@ -349,6 +350,14 @@ const App: React.FC = () => {
     setNewQOptions(['', '', '', '']);
     alert("Soal ditambahkan!");
     await loadWeekDetail(currentClass.id, currentWeek.id);
+  };
+
+  const handleDeleteQuestion = async (qId: string) => {
+    if (!currentClass || !currentWeek || !editingQuizId) return;
+    if (confirm("Yakin ingin menghapus soal ini?")) {
+      await API.deleteQuestionFromQuiz(currentClass.id, currentWeek.id, editingQuizId, qId);
+      await loadWeekDetail(currentClass.id, currentWeek.id);
+    }
   };
 
   const handleSendComment = async (itemId: string, studentId: string) => {
@@ -731,7 +740,7 @@ const App: React.FC = () => {
         <NeoButton 
           variant="secondary" 
           onClick={() => setViewState({ 
-            currentView: currentUser?.role === UserRole.ADMIN ? 'ADMIN_DASHBOARD' : 'STUDENT_DASHBOARD' 
+             currentView: currentUser?.role === UserRole.ADMIN ? 'ADMIN_DASHBOARD' : 'STUDENT_DASHBOARD' 
           })}
           className="mb-6"
         >
@@ -803,6 +812,11 @@ const App: React.FC = () => {
   const renderWeekDetail = () => {
     if (!currentClass || !currentWeek) return <div>Memuat...</div>;
     const items: WeekItem[] = currentWeek.items ? Object.values(currentWeek.items) : [];
+
+    // Get active Quiz Item if editing
+    const activeQuizItem = editingQuizId && currentWeek.items ? currentWeek.items[editingQuizId] : null;
+    // Fix: Explicitly cast to Question[] to avoid 'unknown' type error in map
+    const existingQuestions = activeQuizItem && activeQuizItem.questions ? (Object.values(activeQuizItem.questions) as Question[]) : [];
 
     return (
       <div className="p-4 md:p-8 max-w-6xl mx-auto">
@@ -883,8 +897,8 @@ const App: React.FC = () => {
                                  Soal: {item.questions ? Object.keys(item.questions).length : 0} butir. 
                                  <button className="underline ml-2 font-bold" onClick={() => {
                                     setEditingQuizId(item.id);
-                                    alert("Mode edit soal aktif di panel kanan!");
-                                 }}>Tambah Soal</button>
+                                    document.getElementById('questionEditor')?.scrollIntoView({ behavior: 'smooth' });
+                                 }}>Edit / Tambah Soal</button>
                                  {item.aiCorrectionEnabled && (
                                    <div className="mt-1 flex items-center justify-center gap-1 text-blue-700 font-bold text-xs">
                                      <Bot size={14}/> Koreksi AI Aktif ({item.aiDetailLevel})
@@ -969,41 +983,69 @@ const App: React.FC = () => {
               </NeoCard>
 
               {editingQuizId && (
-                <NeoCard title="Editor Soal" color="yellow" className="border-4 border-dashed">
-                   <p className="text-xs mb-2 font-bold">Menambah soal untuk ID: ...{editingQuizId.slice(-4)}</p>
-                   <form onSubmit={handleAddQuestion} className="flex flex-col gap-3">
-                      <NeoTextArea placeholder="Pertanyaan..." value={newQText} onChange={e => setNewQText(e.target.value)} />
-                      <select className="border-2 border-black p-2 font-bold" value={newQType} onChange={(e: any) => setNewQType(e.target.value)}>
-                        <option value="multiple_choice">Pilihan Ganda</option>
-                        <option value="essay">Essay / Isian</option>
-                      </select>
-                      
-                      {newQType === 'multiple_choice' && (
-                        <div className="space-y-1">
-                          {newQOptions.map((opt, idx) => (
-                            <input 
-                              key={idx} 
-                              className="w-full border-2 border-black p-1 text-sm" 
-                              placeholder={`Opsi ${String.fromCharCode(65+idx)}`}
-                              value={opt}
-                              onChange={e => {
-                                const newOpts = [...newQOptions];
-                                newOpts[idx] = e.target.value;
-                                setNewQOptions(newOpts);
-                              }}
-                            />
-                          ))}
-                          <NeoInput placeholder="Jawaban Benar (Teks Persis)" value={newQCorrect} onChange={e => setNewQCorrect(e.target.value)} />
+                <div id="questionEditor">
+                  <NeoCard title="Editor Soal" color="yellow" className="border-4 border-dashed">
+                     <p className="text-xs mb-2 font-bold">Mengedit: {activeQuizItem?.title}</p>
+                     
+                     <form onSubmit={handleAddQuestion} className="flex flex-col gap-3 mb-6">
+                        <NeoTextArea placeholder="Pertanyaan..." value={newQText} onChange={e => setNewQText(e.target.value)} />
+                        <select className="border-2 border-black p-2 font-bold" value={newQType} onChange={(e: any) => setNewQType(e.target.value)}>
+                          <option value="multiple_choice">Pilihan Ganda</option>
+                          <option value="essay">Essay / Isian</option>
+                        </select>
+                        
+                        {newQType === 'multiple_choice' && (
+                          <div className="space-y-1">
+                            {newQOptions.map((opt, idx) => (
+                              <input 
+                                key={idx} 
+                                className="w-full border-2 border-black p-1 text-sm" 
+                                placeholder={`Opsi ${String.fromCharCode(65+idx)}`}
+                                value={opt}
+                                onChange={e => {
+                                  const newOpts = [...newQOptions];
+                                  newOpts[idx] = e.target.value;
+                                  setNewQOptions(newOpts);
+                                }}
+                              />
+                            ))}
+                            <NeoInput placeholder="Jawaban Benar (Teks Persis)" value={newQCorrect} onChange={e => setNewQCorrect(e.target.value)} />
+                          </div>
+                        )}
+                        
+                        <NeoInput type="number" label="Poin Skor" value={newQScore} onChange={e => setNewQScore(Number(e.target.value))} />
+                        <div className="flex gap-2">
+                          <NeoButton type="submit" size="sm" variant="primary">SIMPAN SOAL</NeoButton>
+                          <NeoButton type="button" size="sm" variant="danger" onClick={() => setEditingQuizId(null)}>TUTUP</NeoButton>
                         </div>
-                      )}
-                      
-                      <NeoInput type="number" label="Poin Skor" value={newQScore} onChange={e => setNewQScore(Number(e.target.value))} />
-                      <div className="flex gap-2">
-                        <NeoButton type="submit" size="sm" variant="primary">SIMPAN SOAL</NeoButton>
-                        <NeoButton type="button" size="sm" variant="danger" onClick={() => setEditingQuizId(null)}>BATAL</NeoButton>
-                      </div>
-                   </form>
-                </NeoCard>
+                     </form>
+
+                     <div className="border-t-2 border-black pt-4">
+                        <h4 className="font-black flex items-center gap-2 mb-2"><List size={16}/> DAFTAR SOAL ({existingQuestions.length})</h4>
+                        <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+                          {existingQuestions.length === 0 && <p className="text-xs italic text-gray-500">Belum ada soal.</p>}
+                          {existingQuestions.map((q, idx) => (
+                            <div key={q.id} className="bg-white border border-black p-2 text-xs relative group">
+                               <div className="font-bold mb-1 flex justify-between pr-6">
+                                 <span>#{idx+1} {q.text.substring(0, 30)}...</span>
+                                 <span className="text-[10px] bg-gray-200 px-1 border border-black h-fit">{q.type === 'essay' ? 'ESSAY' : 'PG'}</span>
+                               </div>
+                               {q.type === 'multiple_choice' && <p className="text-gray-500 mb-1">Kunci: {q.correctAnswer}</p>}
+                               <p className="text-gray-400">Skor: {q.score}</p>
+
+                               <button 
+                                 onClick={() => handleDeleteQuestion(q.id)}
+                                 className="absolute top-1 right-1 p-1 bg-red-100 hover:bg-red-500 hover:text-white border border-black transition-colors"
+                                 title="Hapus Soal"
+                               >
+                                 <Trash2 size={12}/>
+                               </button>
+                            </div>
+                          ))}
+                        </div>
+                     </div>
+                  </NeoCard>
+                </div>
               )}
             </div>
           )}
